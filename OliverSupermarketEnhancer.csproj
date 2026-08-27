@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <Compile Remove="Plugin.cs" />
+    <Compile Remove="deps-util/**/*.cs" />
   </ItemGroup>
 
   <ItemGroup>
