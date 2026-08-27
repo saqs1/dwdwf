@@ -7,6 +7,9 @@ public sealed class OliverPhase123Plugin : BasePlugin
 {
     public override void Load()
     {
+        // Register OLIVER IL2CPP types first, then activate immediately.
+        // The hard dependency guarantees the original S2E plugin is already loaded.
         OliverBootstrap.BeginDeferred();
+        OliverBootstrap.TryInitializeAfterS2E();
     }
 }
