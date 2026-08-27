@@ -9,8 +9,14 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout plugin
         uses: actions/checkout@v4
+
+      - name: Checkout IL2CPP compile references
+        uses: actions/checkout@v4
+        with:
+          repository: BepInEx/BepInEx.Utility.IL2CPP
+          path: deps-util
 
       - name: Setup .NET 6
         uses: actions/setup-dotnet@v4
@@ -32,6 +38,6 @@ jobs:
       - name: Upload DLL
         uses: actions/upload-artifact@v4
         with:
-          name: OliverSupermarketEnhancer-Phase1
+          name: OliverSupermarketEnhancer-Phase1-SAFE
           path: artifact/
           if-no-files-found: error
