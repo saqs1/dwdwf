@@ -7,7 +7,7 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
-using HarmonyLib;
+using UnityEngine;
 
 namespace OliverSupermarketEnhancer
 {
@@ -16,135 +16,135 @@ namespace OliverSupermarketEnhancer
     {
         public const string PluginGuid = "oliver.tik.supermarket.enhancer";
         public const string PluginName = "OLIVER Supermarket Enhancer";
-        public const string PluginVersion = "0.1.0-phase1";
+        public const string PluginVersion = "0.1.1-phase1-safe";
 
-        private static ManualLogSource _log;
-        private static ConfigEntry<bool> _enabled;
-        private static ConfigEntry<string> _primaryFontName;
-        private static Harmony _harmony;
-        private static bool _insideRewrite;
+        internal static ManualLogSource Logger;
+        internal static ConfigEntry<bool> Enabled;
+        internal static ConfigEntry<string> PrimaryFontName;
+
         private static bool _fontBuildAttempted;
         private static object _primaryTmpFont;
-        private static readonly List<object> _tmpFonts = new List<object>();
-        private static readonly HashSet<MethodBase> _patched = new HashSet<MethodBase>();
+        private static readonly List<object> TmpFonts = new List<object>();
+        private static readonly Dictionary<int, string> LastRendered = new Dictionary<int, string>();
 
         public override void Load()
         {
-            _log = Log;
-            _enabled = Config.Bind("Phase1_ArabicNames", "Enabled", true,
-                "Fix Arabic and decorated TikTok usernames on S2E BillboardText only.");
-            _primaryFontName = Config.Bind("Phase1_ArabicNames", "PrimaryFont", "Tahoma",
-                "Preferred Windows font. Safe fallbacks are tried automatically.");
+            Logger = Log;
+            Enabled = Config.Bind("Phase1_ArabicNames", "Enabled", true,
+                "Fix Arabic/decorated TikTok usernames on S2E BillboardText only.");
+            PrimaryFontName = Config.Bind("Phase1_ArabicNames", "PrimaryFont", "Tahoma",
+                "Preferred Windows Arabic font. Fallbacks are tried automatically.");
 
             try
             {
-                _harmony = new Harmony(PluginGuid + ".phase1");
-                int count = PatchTmpTextSetters();
-                if (count == 0)
-                    Log.LogWarning("[OLIVER] TMP text setter was not found. No game object was modified.");
-                else
-                    Log.LogInfo("[OLIVER] Phase 1 loaded safely. Patched TMP setter count: " + count + ". Original S2E DLL is untouched.");
+                AddComponent<BillboardDriver>();
+                Log.LogInfo("[OLIVER] Phase 1 SAFE loaded. NO Harmony patches. Waiting for S2E BillboardText objects only.");
             }
             catch (Exception ex)
             {
-                Log.LogError("[OLIVER] Phase 1 initialization failed safely: " + ex);
+                Log.LogError("[OLIVER] Driver initialization failed safely: " + ex);
             }
         }
 
-        private static int PatchTmpTextSetters()
+        internal static void ScanBillboards()
         {
-            var postfix = new HarmonyMethod(typeof(Plugin).GetMethod(nameof(TextSetterPostfix), BindingFlags.NonPublic | BindingFlags.Static));
-            int count = 0;
-            string[] names = { "TMPro.TMP_Text", "TMPro.TextMeshPro", "TMPro.TextMeshProUGUI" };
-
-            foreach (string typeName in names)
-            {
-                Type t = FindType(typeName);
-                if (t == null) continue;
-
-                MethodInfo setter = t.GetMethod("set_text", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
-                    null, new[] { typeof(string) }, null);
-                if (setter == null || _patched.Contains(setter)) continue;
-
-                try
-                {
-                    _harmony.Patch(setter, postfix: postfix);
-                    _patched.Add(setter);
-                    count++;
-                }
-                catch (Exception ex)
-                {
-                    _log.LogDebug("[OLIVER] Setter patch skipped for " + typeName + ": " + ex.Message);
-                }
-            }
-            return count;
-        }
-
-        private static void TextSetterPostfix(object __instance, string __0)
-        {
-            if (_insideRewrite || _enabled == null || !_enabled.Value || __instance == null || string.IsNullOrEmpty(__0))
-                return;
-
-            // Preserve normal game text and normal English S2E names completely.
-            if (!ContainsNonAscii(__0))
-                return;
+            if (Enabled == null || !Enabled.Value) return;
 
             try
             {
-                if (!IsS2EBillboardText(__instance))
+                GameObject[] objects = Resources.FindObjectsOfTypeAll<GameObject>();
+                if (objects == null || objects.Length == 0) return;
+
+                foreach (GameObject go in objects)
+                {
+                    if (go == null || !string.Equals(go.name, "BillboardText", StringComparison.Ordinal))
+                        continue;
+
+                    if (!go.activeInHierarchy) continue;
+
+                    Component[] components;
+                    try { components = go.GetComponents<Component>(); }
+                    catch { continue; }
+
+                    if (components == null) continue;
+                    foreach (Component component in components)
+                    {
+                        if (component == null) continue;
+                        Type t = component.GetType();
+                        string fullName = t.FullName ?? string.Empty;
+                        if (!fullName.StartsWith("TMPro.", StringComparison.Ordinal)) continue;
+
+                        ProcessTextComponent(component);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.LogDebug("[OLIVER] Billboard scan skipped safely: " + ex.Message);
+            }
+        }
+
+        private static void ProcessTextComponent(object textObject)
+        {
+            try
+            {
+                PropertyInfo textProp = FindProperty(textObject.GetType(), "text");
+                if (textProp == null || !textProp.CanRead || !textProp.CanWrite) return;
+
+                string current = textProp.GetValue(textObject, null) as string;
+                if (string.IsNullOrEmpty(current) || !ContainsArabicOrDecorated(current)) return;
+
+                int id = GetUnityInstanceId(textObject);
+                string oldRendered;
+                if (id != 0 && LastRendered.TryGetValue(id, out oldRendered) && string.Equals(current, oldRendered, StringComparison.Ordinal))
                     return;
 
                 if (!EnsureFontChain())
                 {
-                    _log.LogWarning("[OLIVER] Arabic username detected, but no safe Windows TMP font could be created. Existing text was left unchanged.");
+                    Logger.LogDebug("[OLIVER] Arabic username found but Unicode font asset is not ready yet.");
                     return;
                 }
 
-                string rendered = ArabicNameShaper.ShapeArabicSegments(__0);
-                ApplyFontAndText(__instance, rendered);
-                _log.LogDebug("[OLIVER] Billboard username processed: " + __0);
+                string rendered = ArabicNameShaper.ShapeArabicSegments(current);
+
+                PropertyInfo fontProp = FindProperty(textObject.GetType(), "font");
+                if (fontProp != null && fontProp.CanWrite)
+                {
+                    try { fontProp.SetValue(textObject, _primaryTmpFont, null); } catch { }
+                }
+
+                // We shape/reorder Arabic ourselves, so leave TMP RTL processing off.
+                PropertyInfo rtlProp = FindProperty(textObject.GetType(), "isRightToLeftText");
+                if (rtlProp != null && rtlProp.CanWrite)
+                {
+                    try { rtlProp.SetValue(textObject, false, null); } catch { }
+                }
+
+                textProp.SetValue(textObject, rendered, null);
+                ForceMeshUpdate(textObject);
+                if (id != 0) LastRendered[id] = rendered;
+
+                Logger.LogInfo("[OLIVER] Arabic/decorated S2E BillboardText fixed: " + current);
             }
             catch (Exception ex)
             {
-                _log.LogWarning("[OLIVER] Username fix skipped safely: " + ex.Message);
+                Logger.LogDebug("[OLIVER] One BillboardText was left unchanged safely: " + ex.Message);
             }
         }
 
-        private static bool IsS2EBillboardText(object textObject)
+        private static int GetUnityInstanceId(object obj)
         {
-            object gameObject = GetPropertyValue(textObject, "gameObject");
-            if (gameObject == null) return false;
-            string name = GetPropertyValue(gameObject, "name") as string;
-            return string.Equals(name, "BillboardText", StringComparison.Ordinal);
-        }
-
-        private static void ApplyFontAndText(object textObject, string rendered)
-        {
-            Type t = textObject.GetType();
-            PropertyInfo fontProp = FindProperty(t, "font");
-            if (fontProp != null && fontProp.CanWrite)
-                fontProp.SetValue(textObject, _primaryTmpFont, null);
-
-            PropertyInfo rtlProp = FindProperty(t, "isRightToLeftText");
-            if (rtlProp != null && rtlProp.CanWrite)
-            {
-                try { rtlProp.SetValue(textObject, false, null); } catch { }
-            }
-
-            PropertyInfo textProp = FindProperty(t, "text");
-            if (textProp == null || !textProp.CanWrite)
-                return;
-
-            _insideRewrite = true;
             try
             {
-                textProp.SetValue(textObject, rendered, null);
-                ForceMeshUpdate(textObject);
+                MethodInfo m = obj.GetType().GetMethod("GetInstanceID", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (m != null)
+                {
+                    object value = m.Invoke(obj, null);
+                    if (value is int) return (int)value;
+                }
             }
-            finally
-            {
-                _insideRewrite = false;
-            }
+            catch { }
+            return 0;
         }
 
         private static void ForceMeshUpdate(object textObject)
@@ -153,7 +153,8 @@ namespace OliverSupermarketEnhancer
             {
                 MethodInfo m = textObject.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                     .FirstOrDefault(x => x.Name == "ForceMeshUpdate" && x.GetParameters().Length == 2 &&
-                                         x.GetParameters()[0].ParameterType == typeof(bool) && x.GetParameters()[1].ParameterType == typeof(bool));
+                                         x.GetParameters()[0].ParameterType == typeof(bool) &&
+                                         x.GetParameters()[1].ParameterType == typeof(bool));
                 if (m != null) m.Invoke(textObject, new object[] { false, false });
             }
             catch { }
@@ -165,81 +166,55 @@ namespace OliverSupermarketEnhancer
             if (_fontBuildAttempted) return false;
             _fontBuildAttempted = true;
 
-            Type unityFontType = FindType("UnityEngine.Font");
             Type tmpFontType = FindType("TMPro.TMP_FontAsset");
-            if (unityFontType == null || tmpFontType == null)
-                return false;
-
-            string[] installed = GetInstalledFontNames(unityFontType);
-            if (installed == null || installed.Length == 0)
-                return false;
-
-            var requested = new List<string>();
-            AddUnique(requested, _primaryFontName == null ? null : _primaryFontName.Value);
-            AddUnique(requested, "Tahoma");
-            AddUnique(requested, "Segoe UI");
-            AddUnique(requested, "Arial");
-            AddUnique(requested, "Segoe UI Symbol");
-            AddUnique(requested, "Segoe UI Historic");
-
-            foreach (string wanted in requested)
+            if (tmpFontType == null)
             {
-                string actual = installed.FirstOrDefault(x => string.Equals(x, wanted, StringComparison.OrdinalIgnoreCase));
-                if (actual == null) continue;
+                _fontBuildAttempted = false;
+                return false;
+            }
 
-                object tmp = CreateTmpFontAsset(unityFontType, tmpFontType, actual);
-                if (tmp == null) continue;
-                _tmpFonts.Add(tmp);
-                if (_primaryTmpFont == null) _primaryTmpFont = tmp;
+            var candidates = new List<string>();
+            AddUnique(candidates, PrimaryFontName == null ? null : PrimaryFontName.Value);
+            AddUnique(candidates, "Tahoma");
+            AddUnique(candidates, "Segoe UI");
+            AddUnique(candidates, "Arial");
+            AddUnique(candidates, "Segoe UI Symbol");
+
+            foreach (string name in candidates)
+            {
+                object asset = CreateTmpFontAsset(tmpFontType, name);
+                if (asset == null) continue;
+                TmpFonts.Add(asset);
+                if (_primaryTmpFont == null) _primaryTmpFont = asset;
             }
 
             if (_primaryTmpFont == null)
+            {
+                _fontBuildAttempted = false;
                 return false;
+            }
 
-            WireFallbacks(_primaryTmpFont, _tmpFonts);
-            _log.LogInfo("[OLIVER] Unicode font chain ready. Primary: " + GetPropertyValue(_primaryTmpFont, "name"));
+            WireFallbacks(_primaryTmpFont, TmpFonts);
+            Logger.LogInfo("[OLIVER] Unicode font chain created safely for BillboardText only.");
             return true;
         }
 
-        private static string[] GetInstalledFontNames(Type unityFontType)
+        private static object CreateTmpFontAsset(Type tmpFontType, string fontName)
         {
             try
             {
-                MethodInfo m = unityFontType.GetMethod("GetOSInstalledFontNames", BindingFlags.Public | BindingFlags.Static,
-                    null, Type.EmptyTypes, null);
-                return m == null ? null : m.Invoke(null, null) as string[];
-            }
-            catch (Exception ex)
-            {
-                _log.LogDebug("[OLIVER] Font enumeration failed: " + ex.Message);
-                return null;
-            }
-        }
-
-        private static object CreateTmpFontAsset(Type unityFontType, Type tmpFontType, string fontName)
-        {
-            try
-            {
-                MethodInfo makeOsFont = unityFontType.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                    .FirstOrDefault(m => m.Name == "CreateDynamicFontFromOSFont" && m.GetParameters().Length == 2 &&
-                                         m.GetParameters()[0].ParameterType == typeof(string) &&
-                                         m.GetParameters()[1].ParameterType == typeof(int));
-                if (makeOsFont == null) return null;
-
-                object osFont = makeOsFont.Invoke(null, new object[] { fontName, 64 });
+                Font osFont = Font.CreateDynamicFontFromOSFont(fontName, 64);
                 if (osFont == null) return null;
 
                 MethodInfo makeTmp = tmpFontType.GetMethods(BindingFlags.Public | BindingFlags.Static)
                     .FirstOrDefault(m => m.Name == "CreateFontAsset" && m.GetParameters().Length == 1 &&
-                                         m.GetParameters()[0].ParameterType.IsAssignableFrom(unityFontType));
+                                         m.GetParameters()[0].ParameterType.IsAssignableFrom(osFont.GetType()));
                 if (makeTmp == null)
-                {
                     makeTmp = tmpFontType.GetMethods(BindingFlags.Public | BindingFlags.Static)
                         .FirstOrDefault(m => m.Name == "CreateFontAsset" && m.GetParameters().Length == 1);
-                }
                 if (makeTmp == null) return null;
 
-                object tmp = makeTmp.Invoke(null, new[] { osFont });
+                object tmp = makeTmp.Invoke(null, new object[] { osFont });
                 if (tmp == null) return null;
 
                 SetPropertyValue(tmp, "name", "OLIVER_" + fontName);
@@ -255,7 +230,7 @@ namespace OliverSupermarketEnhancer
             }
             catch (Exception ex)
             {
-                _log.LogDebug("[OLIVER] Font candidate skipped (" + fontName + "): " + ex.Message);
+                Logger.LogDebug("[OLIVER] Font candidate " + fontName + " skipped: " + ex.Message);
                 return null;
             }
         }
@@ -273,13 +248,10 @@ namespace OliverSupermarketEnhancer
                 foreach (object font in fonts)
                 {
                     if (font == null || ReferenceEquals(font, primary)) continue;
-                    try { add.Invoke(list, new[] { font }); } catch { }
+                    try { add.Invoke(list, new object[] { font }); } catch { }
                 }
             }
-            catch (Exception ex)
-            {
-                _log.LogDebug("[OLIVER] Fallback chain wiring skipped: " + ex.Message);
-            }
+            catch { }
         }
 
         private static Type FindType(string fullName)
@@ -328,10 +300,15 @@ namespace OliverSupermarketEnhancer
             catch { }
         }
 
-        private static bool ContainsNonAscii(string value)
+        private static bool ContainsArabicOrDecorated(string value)
         {
             for (int i = 0; i < value.Length; i++)
-                if (value[i] > 0x7F) return true;
+            {
+                char c = value[i];
+                if ((c >= '\u0600' && c <= '\u06FF') || (c >= '\u0750' && c <= '\u077F') ||
+                    (c >= '\u08A0' && c <= '\u08FF') || c > 0x7F)
+                    return true;
+            }
             return false;
         }
 
@@ -339,6 +316,27 @@ namespace OliverSupermarketEnhancer
         {
             if (string.IsNullOrWhiteSpace(value)) return;
             if (!list.Any(x => string.Equals(x, value, StringComparison.OrdinalIgnoreCase))) list.Add(value);
+        }
+    }
+
+    public sealed class BillboardDriver : MonoBehaviour
+    {
+        private float _nextScan;
+        private float _startupDelay = 6f;
+
+        public BillboardDriver(IntPtr handle) : base(handle) { }
+
+        private void Update()
+        {
+            if (_startupDelay > 0f)
+            {
+                _startupDelay -= Time.unscaledDeltaTime;
+                return;
+            }
+
+            if (Time.unscaledTime < _nextScan) return;
+            _nextScan = Time.unscaledTime + 2f;
+            Plugin.ScanBillboards();
         }
     }
 
@@ -390,8 +388,7 @@ namespace OliverSupermarketEnhancer
         public static string ShapeArabicSegments(string input)
         {
             if (string.IsNullOrEmpty(input)) return input;
-            bool hasArabic = input.Any(IsArabicBase);
-            if (!hasArabic) return input;
+            if (!input.Any(IsArabicBase)) return input;
 
             var output = new StringBuilder(input.Length * 2);
             int i = 0;
@@ -410,6 +407,7 @@ namespace OliverSupermarketEnhancer
                     if (IsArabicBase(input[i])) containsArabic = true;
                     i++;
                 }
+
                 string segment = input.Substring(start, i - start);
                 output.Append(containsArabic ? ShapeAndReverseSegment(segment) : segment);
             }
@@ -449,16 +447,6 @@ namespace OliverSupermarketEnhancer
             for (int i = 0; i < segment.Length; i++)
             {
                 char c = segment[i];
-                if (char.IsDigit(c))
-                {
-                    int start = i;
-                    while (i + 1 < segment.Length && char.IsDigit(segment[i + 1])) i++;
-                    string number = segment.Substring(start, i - start + 1);
-                    char[] a = number.ToCharArray(); Array.Reverse(a);
-                    units.Add(new Unit('\0', new string(a)));
-                    continue;
-                }
-
                 var sb = new StringBuilder();
                 sb.Append(c);
                 if (IsArabicBase(c) || c == '\u0640')
@@ -470,21 +458,15 @@ namespace OliverSupermarketEnhancer
 
         private static int PreviousJoinable(List<Unit> units, int index)
         {
-            for (int i = index - 1; i >= 0; i--)
-            {
-                if (Map.ContainsKey(units[i].Base)) return i;
-                return -1;
-            }
+            int i = index - 1;
+            if (i >= 0 && Map.ContainsKey(units[i].Base)) return i;
             return -1;
         }
 
         private static int NextJoinable(List<Unit> units, int index)
         {
-            for (int i = index + 1; i < units.Count; i++)
-            {
-                if (Map.ContainsKey(units[i].Base)) return i;
-                return -1;
-            }
+            int i = index + 1;
+            if (i < units.Count && Map.ContainsKey(units[i].Base)) return i;
             return -1;
         }
 
