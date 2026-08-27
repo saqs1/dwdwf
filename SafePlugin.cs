@@ -7,6 +7,7 @@ using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using BepInEx.Unity.IL2CPP;
+using Il2CppInterop.Runtime;
 using Il2CppInterop.Runtime.Injection;
 using UnityEngine;
 
@@ -17,7 +18,7 @@ namespace OliverSupermarketEnhancer
     {
         public const string PluginGuid = "oliver.tik.supermarket.enhancer.safe";
         public const string PluginName = "OLIVER Supermarket Enhancer SAFE";
-        public const string PluginVersion = "0.1.2-phase1-safe";
+        public const string PluginVersion = "0.1.3-phase1-safe";
 
         internal static ManualLogSource Logger;
         internal static ConfigEntry<bool> Enabled;
@@ -51,13 +52,23 @@ namespace OliverSupermarketEnhancer
             if (Enabled == null || !Enabled.Value) return;
             try
             {
-                var all = Resources.FindObjectsOfTypeAll<GameObject>();
-                foreach (var go in all)
+                var all = Resources.FindObjectsOfTypeAll(Il2CppType.Of<GameObject>());
+                foreach (var raw in all)
                 {
+                    if (raw == null) continue;
+                    GameObject go;
+                    try { go = raw.TryCast<GameObject>(); }
+                    catch { continue; }
                     if (go == null || go.name != "BillboardText" || !go.activeInHierarchy) continue;
-                    var comps = go.GetComponents<Component>();
-                    foreach (var c in comps)
+
+                    var comps = go.GetComponents(Il2CppType.Of<Component>());
+                    if (comps == null) continue;
+                    foreach (var rawComp in comps)
                     {
+                        if (rawComp == null) continue;
+                        Component c;
+                        try { c = rawComp.TryCast<Component>(); }
+                        catch { continue; }
                         if (c == null) continue;
                         var t = c.GetType();
                         if (t.FullName == null || !t.FullName.StartsWith("TMPro.", StringComparison.Ordinal)) continue;
