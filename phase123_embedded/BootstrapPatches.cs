@@ -13,44 +13,24 @@ public static class OliverBootstrap
     internal static ManualLogSource LogSource;
     private static Harmony _harmony;
     private static bool _initialized;
-    private static bool _driverCreated;
+    private static bool _typesRegistered;
 
     public static void BeginDeferred()
     {
         if (LogSource == null)
             LogSource = BepInEx.Logging.Logger.CreateLogSource("S2E OLIVER Phase123");
 
-        if (_driverCreated || _initialized) return;
-
-        try
-        {
-            ClassInjector.RegisterTypeInIl2Cpp<OliverDeferredInitDriver>();
-        }
-        catch (Exception ex)
-        {
-            LogSource.LogDebug($"[OLIVER] Deferred driver registration note: {ex.Message}");
-        }
+        if (_typesRegistered) return;
 
         try
         {
             ClassInjector.RegisterTypeInIl2Cpp<OliverProfileVisualDriver>();
+            _typesRegistered = true;
+            LogSource.LogInfo("[OLIVER] Visual driver registered. Patching original S2E billboard methods now.");
         }
         catch (Exception ex)
         {
-            LogSource.LogDebug($"[OLIVER] Profile driver registration note: {ex.Message}");
-        }
-
-        try
-        {
-            GameObject host = new GameObject("OLIVER_S2E_Phase123_DeferredInit");
-            UnityEngine.Object.DontDestroyOnLoad(host);
-            host.AddComponent<OliverDeferredInitDriver>();
-            _driverCreated = true;
-            LogSource.LogInfo("[OLIVER] Phase123 loaded safely; waiting for original S2E plugin before patching.");
-        }
-        catch (Exception ex)
-        {
-            LogSource.LogError($"[OLIVER] Could not start deferred initialization: {ex}");
+            LogSource.LogWarning($"[OLIVER] Profile driver registration note: {ex.Message}");
         }
     }
 
@@ -60,14 +40,20 @@ public static class OliverBootstrap
 
         try
         {
-            Type s2ePlugin = FindOriginalS2EPluginType();
-            if (s2ePlugin == null) return false;
+            // The billboard creation methods belong to SupermarketSimulatorTikTok, not the BepInEx Plugin class.
+            // Resolve this exact type only; never scan all Unity types with AccessTools.TypeByName.
+            Type s2eType = FindExactType("SupermarketSimulatorTikTok");
+            if (s2eType == null)
+            {
+                LogSource.LogError("[OLIVER] SupermarketSimulatorTikTok type was not found after S2E loaded.");
+                return false;
+            }
 
-            MethodInfo attachText = FindMethod(s2ePlugin, "AttachBillboardText");
-            MethodInfo attachImage = FindMethod(s2ePlugin, "AttachBillboardImage");
+            MethodInfo attachText = FindMethod(s2eType, "AttachBillboardText");
+            MethodInfo attachImage = FindMethod(s2eType, "AttachBillboardImage");
             if (attachText == null || attachImage == null)
             {
-                LogSource.LogWarning("[OLIVER] Original S2E is loaded, but billboard methods are not available yet; retrying.");
+                LogSource.LogError($"[OLIVER] Billboard methods missing on {s2eType.FullName}. Text={attachText != null}, Image={attachImage != null}");
                 return false;
             }
 
@@ -89,60 +75,34 @@ public static class OliverBootstrap
             _harmony.Patch(attachImage, postfix: new HarmonyMethod(imagePostfix));
 
             _initialized = true;
-            LogSource.LogInfo("[OLIVER] Original S2E detected. Phase 1+2+3 patches are ACTIVE.");
+            LogSource.LogInfo("[OLIVER] SupermarketSimulatorTikTok detected. Phase 1+2+3 patches are ACTIVE.");
             LogSource.LogInfo("[OLIVER] Arabic/Unicode + 130% profile + Auto Fit + PNG frame enabled.");
             LogSource.LogInfo("[OLIVER] Original S2E HTTP port remains 55001.");
             return true;
         }
         catch (Exception ex)
         {
-            LogSource.LogWarning($"[OLIVER] Deferred init retry: {ex.GetType().Name}: {ex.Message}");
+            LogSource.LogError($"[OLIVER] Phase123 patch activation failed: {ex}");
             return false;
         }
     }
 
-    private static Type FindOriginalS2EPluginType()
+    private static Type FindExactType(string fullName)
     {
-        Assembly[] assemblies;
         try
         {
-            assemblies = AppDomain.CurrentDomain.GetAssemblies();
-        }
-        catch
-        {
-            return null;
-        }
-
-        foreach (Assembly assembly in assemblies)
-        {
-            if (assembly == null) continue;
-
-            string assemblyName = string.Empty;
-            try { assemblyName = assembly.GetName().Name ?? string.Empty; } catch { }
-
-            if (assemblyName.IndexOf("Oliver", StringComparison.OrdinalIgnoreCase) >= 0)
-                continue;
-
-            Type candidate = null;
-            try
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                // GetType by exact name avoids Harmony AccessTools.TypeByName, which scans
-                // every Unity assembly and produces ReflectionTypeLoadException spam on IL2CPP.
-                candidate = assembly.GetType("Plugin", false, false);
+                if (assembly == null) continue;
+                try
+                {
+                    Type t = assembly.GetType(fullName, false, false);
+                    if (t != null) return t;
+                }
+                catch { }
             }
-            catch
-            {
-                continue;
-            }
-
-            if (candidate == null) continue;
-
-            MethodInfo text = FindMethod(candidate, "AttachBillboardText");
-            MethodInfo image = FindMethod(candidate, "AttachBillboardImage");
-            if (text != null && image != null)
-                return candidate;
         }
-
+        catch { }
         return null;
     }
 
@@ -160,35 +120,14 @@ public static class OliverBootstrap
     }
 }
 
-public sealed class OliverDeferredInitDriver : MonoBehaviour
-{
-    private float _nextAttempt;
-
-    public OliverDeferredInitDriver(IntPtr pointer) : base(pointer) { }
-
-    private void Update()
-    {
-        if (Time.realtimeSinceStartup < _nextAttempt) return;
-        _nextAttempt = Time.realtimeSinceStartup + 0.5f;
-
-        if (OliverBootstrap.TryInitializeAfterS2E())
-        {
-            try { UnityEngine.Object.Destroy(gameObject); } catch { }
-        }
-    }
-}
-
 internal static class OliverS2EPatches
 {
-    // Harmony positional arguments (__0/__1) keep this stable even if the original
-    // decompiler gave different parameter names.
     internal static void AfterAttachBillboardText(GameObject __0, string __1)
     {
-        GameObject parent = __0;
-        string displayText = __1;
-
         try
         {
+            GameObject parent = __0;
+            string displayText = __1;
             if (parent == null || string.IsNullOrEmpty(displayText)) return;
 
             Transform textTransform = parent.transform.Find("BillboardText");
@@ -218,10 +157,9 @@ internal static class OliverS2EPatches
 
     internal static void AfterAttachBillboardImage(GameObject __0, string __1)
     {
-        GameObject parent = __0;
-
         try
         {
+            GameObject parent = __0;
             if (parent == null) return;
 
             Transform newest = null;
@@ -244,7 +182,7 @@ internal static class OliverS2EPatches
 
             if (newest == null) return;
 
-            // Original S2E scale is 0.30. Phase 2 target is exactly 130% => 0.39.
+            // Original S2E scale 0.30 x 130% = 0.39.
             newest.localScale = Vector3.one * 0.39f;
 
             if (newest.gameObject.GetComponent<OliverProfileVisualDriver>() == null)
