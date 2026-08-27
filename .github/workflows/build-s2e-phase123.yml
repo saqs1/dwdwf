@@ -42,7 +42,7 @@ jobs:
           dotnet build EmbeddedHelper.csproj -c Release --no-restore
 
       - name: Install ILRepack
-        run: dotnet tool install --global dotnet-ilrepack --version 2.0.38
+        run: dotnet tool install --global dotnet-ilrepack --version 2.0.44
 
       - name: Merge helper into original S2E
         run: |
