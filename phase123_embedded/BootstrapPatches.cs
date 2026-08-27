@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
@@ -12,12 +13,23 @@ public static class OliverBootstrap
     internal static ManualLogSource LogSource;
     private static Harmony _harmony;
     private static bool _initialized;
+    private static bool _driverCreated;
 
-    public static void Init()
+    public static void BeginDeferred()
     {
-        if (_initialized) return;
-        _initialized = true;
-        LogSource = BepInEx.Logging.Logger.CreateLogSource("S2E OLIVER Phase123");
+        if (LogSource == null)
+            LogSource = BepInEx.Logging.Logger.CreateLogSource("S2E OLIVER Phase123");
+
+        if (_driverCreated || _initialized) return;
+
+        try
+        {
+            ClassInjector.RegisterTypeInIl2Cpp<OliverDeferredInitDriver>();
+        }
+        catch (Exception ex)
+        {
+            LogSource.LogDebug($"[OLIVER] Deferred driver registration note: {ex.Message}");
+        }
 
         try
         {
@@ -25,40 +37,143 @@ public static class OliverBootstrap
         }
         catch (Exception ex)
         {
-            LogSource.LogWarning($"[OLIVER] Driver registration skipped: {ex.Message}");
+            LogSource.LogDebug($"[OLIVER] Profile driver registration note: {ex.Message}");
         }
 
         try
         {
-            Type s2ePlugin = AccessTools.TypeByName("Plugin");
-            if (s2ePlugin == null)
-            {
-                LogSource.LogError("[OLIVER] Original S2E Plugin type was not found.");
-                return;
-            }
-
-            MethodInfo attachText = AccessTools.Method(s2ePlugin, "AttachBillboardText");
-            MethodInfo attachImage = AccessTools.Method(s2ePlugin, "AttachBillboardImage");
-            if (attachText == null || attachImage == null)
-            {
-                LogSource.LogError("[OLIVER] S2E billboard methods were not found.");
-                return;
-            }
-
-            _harmony = new Harmony("oliver.tik.s2e.phase123.embedded");
-            _harmony.Patch(
-                attachText,
-                postfix: new HarmonyMethod(typeof(OliverS2EPatches), nameof(OliverS2EPatches.AfterAttachBillboardText)));
-            _harmony.Patch(
-                attachImage,
-                postfix: new HarmonyMethod(typeof(OliverS2EPatches), nameof(OliverS2EPatches.AfterAttachBillboardImage)));
-
-            LogSource.LogInfo("[OLIVER] Embedded Phase 1+2+3 active: Arabic/Unicode + 130% profile + Auto Fit + PNG frame.");
-            LogSource.LogInfo("[OLIVER] Original S2E HTTP port remains 55001.");
+            GameObject host = new GameObject("OLIVER_S2E_Phase123_DeferredInit");
+            UnityEngine.Object.DontDestroyOnLoad(host);
+            host.AddComponent<OliverDeferredInitDriver>();
+            _driverCreated = true;
+            LogSource.LogInfo("[OLIVER] Phase123 loaded safely; waiting for original S2E plugin before patching.");
         }
         catch (Exception ex)
         {
-            LogSource.LogError($"[OLIVER] Embedded Phase123 init failed: {ex}");
+            LogSource.LogError($"[OLIVER] Could not start deferred initialization: {ex}");
+        }
+    }
+
+    internal static bool TryInitializeAfterS2E()
+    {
+        if (_initialized) return true;
+
+        try
+        {
+            Type s2ePlugin = FindOriginalS2EPluginType();
+            if (s2ePlugin == null) return false;
+
+            MethodInfo attachText = FindMethod(s2ePlugin, "AttachBillboardText");
+            MethodInfo attachImage = FindMethod(s2ePlugin, "AttachBillboardImage");
+            if (attachText == null || attachImage == null)
+            {
+                LogSource.LogWarning("[OLIVER] Original S2E is loaded, but billboard methods are not available yet; retrying.");
+                return false;
+            }
+
+            MethodInfo textPostfix = typeof(OliverS2EPatches).GetMethod(
+                nameof(OliverS2EPatches.AfterAttachBillboardText),
+                BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+            MethodInfo imagePostfix = typeof(OliverS2EPatches).GetMethod(
+                nameof(OliverS2EPatches.AfterAttachBillboardImage),
+                BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+
+            if (textPostfix == null || imagePostfix == null)
+            {
+                LogSource.LogError("[OLIVER] Internal patch methods are missing.");
+                return false;
+            }
+
+            _harmony = new Harmony("oliver.tik.s2e.phase123.standalone");
+            _harmony.Patch(attachText, postfix: new HarmonyMethod(textPostfix));
+            _harmony.Patch(attachImage, postfix: new HarmonyMethod(imagePostfix));
+
+            _initialized = true;
+            LogSource.LogInfo("[OLIVER] Original S2E detected. Phase 1+2+3 patches are ACTIVE.");
+            LogSource.LogInfo("[OLIVER] Arabic/Unicode + 130% profile + Auto Fit + PNG frame enabled.");
+            LogSource.LogInfo("[OLIVER] Original S2E HTTP port remains 55001.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogSource.LogWarning($"[OLIVER] Deferred init retry: {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static Type FindOriginalS2EPluginType()
+    {
+        Assembly[] assemblies;
+        try
+        {
+            assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        }
+        catch
+        {
+            return null;
+        }
+
+        foreach (Assembly assembly in assemblies)
+        {
+            if (assembly == null) continue;
+
+            string assemblyName = string.Empty;
+            try { assemblyName = assembly.GetName().Name ?? string.Empty; } catch { }
+
+            if (assemblyName.IndexOf("Oliver", StringComparison.OrdinalIgnoreCase) >= 0)
+                continue;
+
+            Type candidate = null;
+            try
+            {
+                // GetType by exact name avoids Harmony AccessTools.TypeByName, which scans
+                // every Unity assembly and produces ReflectionTypeLoadException spam on IL2CPP.
+                candidate = assembly.GetType("Plugin", false, false);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (candidate == null) continue;
+
+            MethodInfo text = FindMethod(candidate, "AttachBillboardText");
+            MethodInfo image = FindMethod(candidate, "AttachBillboardImage");
+            if (text != null && image != null)
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private static MethodInfo FindMethod(Type type, string name)
+    {
+        try
+        {
+            return type.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+                .FirstOrDefault(m => string.Equals(m.Name, name, StringComparison.Ordinal));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+}
+
+public sealed class OliverDeferredInitDriver : MonoBehaviour
+{
+    private float _nextAttempt;
+
+    public OliverDeferredInitDriver(IntPtr pointer) : base(pointer) { }
+
+    private void Update()
+    {
+        if (Time.realtimeSinceStartup < _nextAttempt) return;
+        _nextAttempt = Time.realtimeSinceStartup + 0.5f;
+
+        if (OliverBootstrap.TryInitializeAfterS2E())
+        {
+            try { UnityEngine.Object.Destroy(gameObject); } catch { }
         }
     }
 }
