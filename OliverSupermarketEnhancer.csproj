@@ -14,8 +14,20 @@
       https://nuget.samboy.dev/v3/index.json
     </RestoreAdditionalProjectSources>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="Plugin.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.754" IncludeAssets="compile" />
-    <PackageReference Include="UnityEngine.Modules" Version="5.6.0" IncludeAssets="compile" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Il2Cppmscorlib"><HintPath>deps-util/IL2CPP_net6/Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppSystem"><HintPath>deps-util/IL2CPP_net6/Il2CppSystem.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>deps-util/IL2CPP_net6/UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>deps-util/IL2CPP_net6/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>deps-util/IL2CPP_net6/UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 </Project>
