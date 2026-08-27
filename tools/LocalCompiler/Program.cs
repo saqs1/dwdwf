@@ -1,6 +1,6 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using System.Collections.Immutable;
+using Basic.Reference.Assemblies;
 using System.Reflection;
 
 if (args.Length < 3)
@@ -17,22 +17,24 @@ var source = File.ReadAllText(sourcePath);
 var syntax = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest));
 
 var refs = new Dictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
-void AddRef(string path)
+foreach (var r in ReferenceAssemblies.Net60)
+{
+    if (r is PortableExecutableReference pe && !string.IsNullOrEmpty(pe.FilePath))
+        refs[Path.GetFileNameWithoutExtension(pe.FilePath)] = r;
+    else
+        refs[Guid.NewGuid().ToString()] = r;
+}
+
+foreach (var p in Directory.EnumerateFiles(refsDir, "*.dll", SearchOption.AllDirectories))
 {
     try
     {
-        if (!File.Exists(path)) return;
-        var an = AssemblyName.GetAssemblyName(path);
-        var key = an.Name ?? Path.GetFileNameWithoutExtension(path);
-        if (!refs.ContainsKey(key)) refs[key] = MetadataReference.CreateFromFile(path);
+        var an = AssemblyName.GetAssemblyName(p);
+        var key = an.Name ?? Path.GetFileNameWithoutExtension(p);
+        if (!refs.ContainsKey(key)) refs[key] = MetadataReference.CreateFromFile(p);
     }
     catch { }
 }
-
-var tpa = (AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string ?? "")
-    .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries);
-foreach (var p in tpa) AddRef(p);
-foreach (var p in Directory.EnumerateFiles(refsDir, "*.dll", SearchOption.AllDirectories)) AddRef(p);
 
 var compilation = CSharpCompilation.Create(
     Path.GetFileNameWithoutExtension(outputPath),
