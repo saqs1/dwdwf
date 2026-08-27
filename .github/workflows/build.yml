@@ -1,0 +1,37 @@
+name: Build OLIVER Supermarket Enhancer
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 6
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Restore
+        run: dotnet restore OliverSupermarketEnhancer.csproj
+
+      - name: Build Release
+        run: dotnet build OliverSupermarketEnhancer.csproj -c Release --no-restore
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p artifact
+          cp bin/Release/net6.0/OliverSupermarketEnhancer.dll artifact/OliverSupermarketEnhancer.dll
+          sha256sum artifact/OliverSupermarketEnhancer.dll | tee artifact/SHA256.txt
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: OliverSupermarketEnhancer-Phase1
+          path: artifact/
+          if-no-files-found: error
