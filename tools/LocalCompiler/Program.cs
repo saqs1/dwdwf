@@ -1,6 +1,5 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
-using Basic.Reference.Assemblies;
 using System.Reflection;
 
 if (args.Length < 3)
@@ -17,7 +16,7 @@ var source = File.ReadAllText(sourcePath);
 var syntax = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest));
 
 var refs = new Dictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
-foreach (var r in ReferenceAssemblies.Net60)
+foreach (var r in Basic.Reference.Assemblies.Net60.All)
 {
     if (r is PortableExecutableReference pe && !string.IsNullOrEmpty(pe.FilePath))
         refs[Path.GetFileNameWithoutExtension(pe.FilePath)] = r;
