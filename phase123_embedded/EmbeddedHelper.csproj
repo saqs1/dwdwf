@@ -8,8 +8,14 @@
     <LangVersion>10.0</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Deterministic>true</Deterministic>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <RestoreAdditionalProjectSources>https://api.nuget.org/v3/index.json;https://nuget.bepinex.dev/v3/index.json;https://nuget.samboy.dev/v3/index.json</RestoreAdditionalProjectSources>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="BootstrapPatches.cs" />
+    <Compile Include="ProfileFrame.cs" />
+    <Compile Include="UnicodeArabic.cs" />
+  </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.754" IncludeAssets="compile" />
     <PackageReference Include="SixLabors.ImageSharp" Version="2.1.10" />
