@@ -1,0 +1,79 @@
+name: Build S2E Phase123 Embedded
+
+on:
+  push:
+    branches: [ s2e-phase123 ]
+    paths:
+      - 'phase123_embedded/**'
+      - '.github/workflows/build-s2e-phase123.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: Checkout IL2CPP compile references
+        uses: actions/checkout@v4
+        with:
+          repository: BepInEx/BepInEx.Utility.IL2CPP
+          path: phase123_embedded/deps-util
+
+      - name: Rebuild original S2E payload
+        run: |
+          cat phase123_embedded/original/s2e.gz.b64.* > phase123_embedded/original/s2e.gz.b64
+          base64 -d phase123_embedded/original/s2e.gz.b64 > phase123_embedded/original/s2e-original.dll.gz
+          gzip -dc phase123_embedded/original/s2e-original.dll.gz > phase123_embedded/original/s2e-original.dll
+          echo "ec35cacffedc712abd1b6800b9ddb967319cda882cd0b78135648470e645b5f9  phase123_embedded/original/s2e-original.dll" | sha256sum -c -
+
+      - name: Build embedded helper
+        working-directory: phase123_embedded
+        run: |
+          dotnet restore EmbeddedHelper.csproj
+          dotnet build EmbeddedHelper.csproj -c Release --no-restore
+          mkdir -p helper
+          cp bin/Release/net6.0/OliverS2EEmbeddedHelper.dll helper/OliverS2EEmbeddedHelper.dll
+
+      - name: Build loader
+        working-directory: phase123_embedded
+        run: |
+          dotnet restore OliverLoader.csproj
+          dotnet build OliverLoader.csproj -c Release --no-restore
+
+      - name: Install ILRepack
+        run: dotnet tool install --global dotnet-ilrepack --version 2.0.38
+
+      - name: Merge loader into original S2E
+        run: |
+          mkdir -p phase123_embedded/out
+          $HOME/.dotnet/tools/ilrepack /out:phase123_embedded/out/s2e-merged.dll phase123_embedded/original/s2e-original.dll phase123_embedded/bin/Release/net48/OliverLoader.dll
+
+      - name: Patch Plugin.Load
+        working-directory: phase123_embedded
+        run: |
+          dotnet restore Patcher.csproj
+          dotnet run --project Patcher.csproj -c Release -- out/s2e-merged.dll out/s2e-supermarket-simulator.dll
+
+      - name: Verify output
+        run: |
+          test -s phase123_embedded/out/s2e-supermarket-simulator.dll
+          sha256sum phase123_embedded/out/s2e-supermarket-simulator.dll | tee phase123_embedded/out/SHA256.txt
+          ls -lh phase123_embedded/original/s2e-original.dll phase123_embedded/out/s2e-supermarket-simulator.dll
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: S2E-Phase123-Embedded
+          path: |
+            phase123_embedded/out/s2e-supermarket-simulator.dll
+            phase123_embedded/out/SHA256.txt
+          if-no-files-found: error
