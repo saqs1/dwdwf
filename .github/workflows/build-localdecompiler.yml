@@ -1,0 +1,19 @@
+name: Build LocalDecompiler
+on:
+  push:
+    branches: [ main ]
+    paths: ['tools/LocalDecompiler/**','.github/workflows/build-localdecompiler.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: '8.0.x' }
+      - run: dotnet publish tools/LocalDecompiler/LocalDecompiler.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o decompiler-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OLIVER-LocalDecompiler-linux-x64
+          path: decompiler-out/
+          if-no-files-found: error
