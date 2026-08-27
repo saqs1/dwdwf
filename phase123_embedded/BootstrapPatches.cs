@@ -26,7 +26,7 @@ public static class OliverBootstrap
         {
             ClassInjector.RegisterTypeInIl2Cpp<OliverProfileVisualDriver>();
             _typesRegistered = true;
-            LogSource.LogInfo("[OLIVER] Visual driver registered. Patching original S2E billboard methods now.");
+            LogSource.LogInfo("[OLIVER] Visual driver registered. Patching original S2E PlayerUtilities billboard methods now.");
         }
         catch (Exception ex)
         {
@@ -40,12 +40,12 @@ public static class OliverBootstrap
 
         try
         {
-            // The billboard creation methods belong to SupermarketSimulatorTikTok, not the BepInEx Plugin class.
-            // Resolve this exact type only; never scan all Unity types with AccessTools.TypeByName.
-            Type s2eType = FindExactType("SupermarketSimulatorTikTok");
+            // Verified directly from the decompiled original S2E source:
+            // AttachBillboardText and AttachBillboardImage are static methods on PlayerUtilities.
+            Type s2eType = FindExactType("PlayerUtilities");
             if (s2eType == null)
             {
-                LogSource.LogError("[OLIVER] SupermarketSimulatorTikTok type was not found after S2E loaded.");
+                LogSource.LogError("[OLIVER] PlayerUtilities type was not found after original S2E loaded.");
                 return false;
             }
 
@@ -75,7 +75,7 @@ public static class OliverBootstrap
             _harmony.Patch(attachImage, postfix: new HarmonyMethod(imagePostfix));
 
             _initialized = true;
-            LogSource.LogInfo("[OLIVER] SupermarketSimulatorTikTok detected. Phase 1+2+3 patches are ACTIVE.");
+            LogSource.LogInfo("[OLIVER] PlayerUtilities detected. Phase 1+2+3 patches are ACTIVE.");
             LogSource.LogInfo("[OLIVER] Arabic/Unicode + 130% profile + Auto Fit + PNG frame enabled.");
             LogSource.LogInfo("[OLIVER] Original S2E HTTP port remains 55001.");
             return true;
@@ -87,7 +87,7 @@ public static class OliverBootstrap
         }
     }
 
-    private static Type FindExactType(string fullName)
+    internal static Type FindExactType(string fullName)
     {
         try
         {
