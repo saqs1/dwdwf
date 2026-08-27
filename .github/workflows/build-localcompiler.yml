@@ -1,0 +1,26 @@
+name: Build LocalCompiler
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'tools/LocalCompiler/**'
+      - '.github/workflows/build-localcompiler.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish self-contained compiler
+        run: dotnet publish tools/LocalCompiler/LocalCompiler.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o compiler-out
+      - name: Upload compiler
+        uses: actions/upload-artifact@v4
+        with:
+          name: OLIVER-LocalCompiler-linux-x64
+          path: compiler-out/
+          if-no-files-found: error
