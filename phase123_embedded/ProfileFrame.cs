@@ -1,14 +1,6 @@
 using System;
-using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Reflection;
 using BepInEx;
-using BepInEx.Logging;
-using HarmonyLib;
-using Il2CppInterop.Runtime;
-using Il2CppInterop.Runtime.Injection;
-using Il2CppInterop.Runtime.InteropTypes;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
@@ -31,6 +23,7 @@ public sealed class OliverProfileVisualDriver : MonoBehaviour
             Renderer renderer = GetComponent<Renderer>();
             if (renderer == null || renderer.material == null || renderer.material.mainTexture == null) return;
 
+            // Phase 2 Auto Fit: center-crop the texture without stretching the profile image.
             Texture texture = renderer.material.mainTexture;
             int width = texture.width;
             int height = texture.height;
@@ -74,6 +67,7 @@ internal static class OliverFrameFactory
     internal static void AttachFrame(Transform imageTransform)
     {
         if (imageTransform == null || imageTransform.Find("OLIVER_ProfileFrame") != null) return;
+
         EnsureFrameLoaded();
         if (_frameTexture == null || _frameMaterial == null) return;
 
@@ -83,8 +77,9 @@ internal static class OliverFrameFactory
         frame.transform.localPosition = new Vector3(0f, 0f, -0.012f);
         frame.transform.localRotation = Quaternion.identity;
         frame.transform.localScale = Vector3.one * 1.28f;
-        Collider collider = frame.GetComponent<Collider>();
-        if (collider != null) UnityEngine.Object.Destroy(collider);
+
+        // Do not require UnityEngine.PhysicsModule in the helper build. The billboard itself
+        // controls placement and this visual quad is only used as the PNG overlay.
         Renderer renderer = frame.GetComponent<Renderer>();
         if (renderer != null) renderer.material = _frameMaterial;
     }
@@ -93,6 +88,7 @@ internal static class OliverFrameFactory
     {
         if (_loadAttempted) return;
         _loadAttempted = true;
+
         try
         {
             string path = Path.Combine(Paths.PluginPath, "Oliver_Royal_Frame.png");
@@ -107,6 +103,7 @@ internal static class OliverFrameFactory
             int height = image.Height;
             Rgba32[] pixels = new Rgba32[width * height];
             image.CopyPixelDataTo(pixels);
+
             byte[] rgba = new byte[width * height * 4];
             for (int y = 0; y < height; y++)
             {
@@ -114,25 +111,33 @@ internal static class OliverFrameFactory
                 {
                     int src = y * width + x;
                     int dst = ((height - 1 - y) * width + x) * 4;
-                    Rgba32 p = pixels[src];
-                    rgba[dst] = p.R;
-                    rgba[dst + 1] = p.G;
-                    rgba[dst + 2] = p.B;
-                    rgba[dst + 3] = p.A;
+                    Rgba32 pixel = pixels[src];
+                    rgba[dst] = pixel.R;
+                    rgba[dst + 1] = pixel.G;
+                    rgba[dst + 2] = pixel.B;
+                    rgba[dst + 3] = pixel.A;
                 }
             }
 
             _frameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
-            _frameTexture.LoadRawTextureData(Il2CppStructArray<byte>.op_Implicit(rgba));
+            var il2cppBytes = new Il2CppStructArray<byte>(rgba);
+            _frameTexture.LoadRawTextureData(il2cppBytes);
             _frameTexture.Apply(false, true);
             _frameTexture.wrapMode = TextureWrapMode.Clamp;
             _frameTexture.filterMode = FilterMode.Bilinear;
 
-            Shader shader = Shader.Find("Sprites/Default") ?? Shader.Find("Unlit/Transparent") ?? Shader.Find("Unlit/Texture");
-            if (shader == null) return;
+            Shader shader = Shader.Find("Sprites/Default") ??
+                            Shader.Find("Unlit/Transparent") ??
+                            Shader.Find("Unlit/Texture");
+            if (shader == null)
+            {
+                OliverBootstrap.LogSource?.LogWarning("[OLIVER] No transparent shader was found for the PNG frame.");
+                return;
+            }
+
             _frameMaterial = new Material(shader);
             _frameMaterial.mainTexture = _frameTexture;
-            _frameMaterial.color = Color.white;
+            _frameMaterial.color = UnityEngine.Color.white;
             OliverBootstrap.LogSource?.LogInfo("[OLIVER] Royal PNG frame loaded.");
         }
         catch (Exception ex)
