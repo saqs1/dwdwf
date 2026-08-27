@@ -18,9 +18,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: |
-            6.0.x
-            8.0.x
+          dotnet-version: 6.0.x
 
       - name: Checkout IL2CPP compile references
         uses: actions/checkout@v4
@@ -41,34 +39,21 @@ jobs:
           dotnet restore EmbeddedHelper.csproj
           dotnet build EmbeddedHelper.csproj -c Release --no-restore
 
-      - name: Install ILRepack
-        run: dotnet tool install --global dotnet-ilrepack --version 2.0.44
-
-      - name: Collect merge resolution libraries
-        run: |
-          mkdir -p phase123_embedded/merge-libs
-          find "$HOME/.nuget/packages" -type f -name '*.dll' -path '*/lib/*' -exec cp -n {} phase123_embedded/merge-libs/ \; || true
-          cp -n phase123_embedded/deps-util/IL2CPP_net6/*.dll phase123_embedded/merge-libs/ || true
-          ls phase123_embedded/merge-libs | sort | head -100
-
-      - name: Merge helper into original S2E
-        run: |
-          mkdir -p phase123_embedded/out
-          $HOME/.dotnet/tools/ilrepack \
-            /lib:phase123_embedded/merge-libs \
-            /out:phase123_embedded/out/s2e-merged.dll \
-            phase123_embedded/original/s2e-original.dll \
-            phase123_embedded/bin/Release/net6.0/OliverS2EEmbeddedHelper.dll
-
-      - name: Patch Plugin.Load
+      - name: Embed helper and patch original S2E
         working-directory: phase123_embedded
         run: |
+          mkdir -p out
           dotnet restore Patcher.csproj
-          dotnet run --project Patcher.csproj -c Release -- out/s2e-merged.dll out/s2e-supermarket-simulator.dll
+          dotnet run --project Patcher.csproj -c Release -- \
+            original/s2e-original.dll \
+            bin/Release/net6.0/OliverS2EEmbeddedHelper.dll \
+            out/s2e-supermarket-simulator.dll
 
       - name: Verify output
         run: |
           test -s phase123_embedded/out/s2e-supermarket-simulator.dll
+          test $(stat -c%s phase123_embedded/out/s2e-supermarket-simulator.dll) -gt 160256
+          grep -a -q "OliverS2EEmbeddedHelper.dll" phase123_embedded/out/s2e-supermarket-simulator.dll
           sha256sum phase123_embedded/out/s2e-supermarket-simulator.dll | tee phase123_embedded/out/SHA256.txt
           ls -lh phase123_embedded/original/s2e-original.dll phase123_embedded/out/s2e-supermarket-simulator.dll
 
