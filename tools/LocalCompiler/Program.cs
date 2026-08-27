@@ -16,7 +16,7 @@ var source = File.ReadAllText(sourcePath);
 var syntax = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Latest));
 
 var refs = new Dictionary<string, MetadataReference>(StringComparer.OrdinalIgnoreCase);
-foreach (var r in Basic.Reference.Assemblies.Net60.All)
+foreach (var r in Basic.Reference.Assemblies.Net60.References.All)
 {
     if (r is PortableExecutableReference pe && !string.IsNullOrEmpty(pe.FilePath))
         refs[Path.GetFileNameWithoutExtension(pe.FilePath)] = r;
