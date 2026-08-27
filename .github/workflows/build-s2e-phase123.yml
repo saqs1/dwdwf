@@ -1,4 +1,4 @@
-name: Build S2E Phase123 Embedded
+name: Build S2E Phase123 Standalone
 
 on:
   push:
@@ -26,42 +26,34 @@ jobs:
           repository: BepInEx/BepInEx.Utility.IL2CPP
           path: phase123_embedded/deps-util
 
-      - name: Rebuild original S2E payload
+      - name: Rebuild verified original S2E
         run: |
           cat phase123_embedded/original/s2e.gz.part.* > phase123_embedded/original/s2e-original.dll.gz
           echo "5e0fab6b21fdc3c7434e77b12b3022c20c3a36ddd34b775cb00fd393f08a95cf  phase123_embedded/original/s2e-original.dll.gz" | sha256sum -c -
           gzip -dc phase123_embedded/original/s2e-original.dll.gz > phase123_embedded/original/s2e-original.dll
           echo "ec35cacffedc712abd1b6800b9ddb967319cda882cd0b78135648470e645b5f9  phase123_embedded/original/s2e-original.dll" | sha256sum -c -
 
-      - name: Build embedded helper
+      - name: Build standalone OLIVER Phase123 plugin
         working-directory: phase123_embedded
         run: |
-          dotnet restore EmbeddedHelper.csproj
-          dotnet build EmbeddedHelper.csproj -c Release --no-restore
+          dotnet restore OliverPhase123.csproj
+          dotnet build OliverPhase123.csproj -c Release --no-restore
 
-      - name: Embed helper and patch original S2E
-        working-directory: phase123_embedded
+      - name: Prepare safe package
         run: |
-          mkdir -p out
-          dotnet restore Patcher.csproj
-          dotnet run --project Patcher.csproj -c Release -- \
-            original/s2e-original.dll \
-            bin/Release/net6.0/OliverS2EEmbeddedHelper.dll \
-            out/s2e-supermarket-simulator.dll
+          mkdir -p phase123_embedded/out
+          cp phase123_embedded/original/s2e-original.dll phase123_embedded/out/s2e-supermarket-simulator.dll
+          cp phase123_embedded/bin/Release/net6.0/OliverS2EPhase123.dll phase123_embedded/out/OliverS2EPhase123.dll
+          echo "ec35cacffedc712abd1b6800b9ddb967319cda882cd0b78135648470e645b5f9  phase123_embedded/out/s2e-supermarket-simulator.dll" | sha256sum -c -
+          sha256sum phase123_embedded/out/s2e-supermarket-simulator.dll phase123_embedded/out/OliverS2EPhase123.dll | tee phase123_embedded/out/SHA256.txt
+          ls -lh phase123_embedded/out/s2e-supermarket-simulator.dll phase123_embedded/out/OliverS2EPhase123.dll
 
-      - name: Verify output
-        run: |
-          test -s phase123_embedded/out/s2e-supermarket-simulator.dll
-          test $(stat -c%s phase123_embedded/out/s2e-supermarket-simulator.dll) -gt 160256
-          grep -a -q "OliverS2EEmbeddedHelper.dll" phase123_embedded/out/s2e-supermarket-simulator.dll
-          sha256sum phase123_embedded/out/s2e-supermarket-simulator.dll | tee phase123_embedded/out/SHA256.txt
-          ls -lh phase123_embedded/original/s2e-original.dll phase123_embedded/out/s2e-supermarket-simulator.dll
-
-      - name: Upload DLL
+      - name: Upload safe package
         uses: actions/upload-artifact@v4
         with:
-          name: S2E-Phase123-Embedded
+          name: S2E-Phase123-Standalone-SAFE
           path: |
             phase123_embedded/out/s2e-supermarket-simulator.dll
+            phase123_embedded/out/OliverS2EPhase123.dll
             phase123_embedded/out/SHA256.txt
           if-no-files-found: error
