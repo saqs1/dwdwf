@@ -65,8 +65,13 @@ public static class OliverBootstrap
 
 internal static class OliverS2EPatches
 {
-    internal static void AfterAttachBillboardText(GameObject parent, string displayText)
+    // Harmony positional arguments (__0/__1) keep this stable even if the original
+    // decompiler gave different parameter names.
+    internal static void AfterAttachBillboardText(GameObject __0, string __1)
     {
+        GameObject parent = __0;
+        string displayText = __1;
+
         try
         {
             if (parent == null || string.IsNullOrEmpty(displayText)) return;
@@ -96,8 +101,10 @@ internal static class OliverS2EPatches
         }
     }
 
-    internal static void AfterAttachBillboardImage(GameObject parent, string url)
+    internal static void AfterAttachBillboardImage(GameObject __0, string __1)
     {
+        GameObject parent = __0;
+
         try
         {
             if (parent == null) return;
