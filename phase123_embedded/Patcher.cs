@@ -34,8 +34,6 @@ internal static class Program
         MethodDefinition load = plugin.Methods.FirstOrDefault(m => m.Name == "Load" && !m.IsStatic && m.HasBody);
         if (load == null) throw new Exception("Original S2E Plugin.Load method was not found");
 
-        // Embed the Phase123 helper as raw bytes. This keeps the user's installation to one
-        // modified S2E DLL (plus the PNG frame) and avoids adding a second BepInEx plugin.
         for (int i = module.Resources.Count - 1; i >= 0; i--)
         {
             if (module.Resources[i].Name == ResourceName)
@@ -43,7 +41,7 @@ internal static class Program
         }
         module.Resources.Add(new EmbeddedResource(
             ResourceName,
-            ManifestResourceAttributes.Private,
+            Mono.Cecil.ManifestResourceAttributes.Private,
             File.ReadAllBytes(helperPath)));
 
         TypeDefinition oldLoader = module.Types.FirstOrDefault(t => t.Name == "OliverEmbeddedLoader");
@@ -133,26 +131,21 @@ internal static class Program
         Instruction tryStart = il.Create(OpCodes.Nop);
         Instruction loopCheck = il.Create(OpCodes.Ldloc, totalVar);
         Instruction loopEnd = il.Create(OpCodes.Nop);
-        Instruction successLeave = il.Create(OpCodes.Leave, loopEnd); // target corrected below
+        Instruction safeLeave = il.Create(OpCodes.Leave, loopEnd);
         Instruction tryEnd = il.Create(OpCodes.Nop);
         Instruction handlerStart = il.Create(OpCodes.Pop);
         Instruction ret = il.Create(OpCodes.Ret);
 
         il.Append(tryStart);
-
-        // Assembly host = Assembly.GetExecutingAssembly();
         il.Append(il.Create(OpCodes.Call, getExecutingAssembly));
         il.Append(il.Create(OpCodes.Stloc, hostVar));
-
-        // Stream stream = host.GetManifestResourceStream(ResourceName);
         il.Append(il.Create(OpCodes.Ldloc, hostVar));
         il.Append(il.Create(OpCodes.Ldstr, ResourceName));
         il.Append(il.Create(OpCodes.Callvirt, getResourceStream));
         il.Append(il.Create(OpCodes.Stloc, streamVar));
         il.Append(il.Create(OpCodes.Ldloc, streamVar));
-        il.Append(il.Create(OpCodes.Brfalse, successLeave));
+        il.Append(il.Create(OpCodes.Brfalse, safeLeave));
 
-        // byte[] data = new byte[(int)stream.Length];
         il.Append(il.Create(OpCodes.Ldloc, streamVar));
         il.Append(il.Create(OpCodes.Callvirt, streamLength));
         il.Append(il.Create(OpCodes.Conv_I4));
@@ -161,13 +154,11 @@ internal static class Program
         il.Append(il.Create(OpCodes.Ldc_I4_0));
         il.Append(il.Create(OpCodes.Stloc, totalVar));
 
-        // while (total < data.Length) { read = stream.Read(...); if (read <= 0) break; total += read; }
         il.Append(loopCheck);
         il.Append(il.Create(OpCodes.Ldloc, dataVar));
         il.Append(il.Create(OpCodes.Ldlen));
         il.Append(il.Create(OpCodes.Conv_I4));
         il.Append(il.Create(OpCodes.Bge, loopEnd));
-
         il.Append(il.Create(OpCodes.Ldloc, streamVar));
         il.Append(il.Create(OpCodes.Ldloc, dataVar));
         il.Append(il.Create(OpCodes.Ldloc, totalVar));
@@ -188,51 +179,43 @@ internal static class Program
         il.Append(il.Create(OpCodes.Br, loopCheck));
 
         il.Append(loopEnd);
-        // if (total != data.Length) return safely;
         il.Append(il.Create(OpCodes.Ldloc, totalVar));
         il.Append(il.Create(OpCodes.Ldloc, dataVar));
         il.Append(il.Create(OpCodes.Ldlen));
         il.Append(il.Create(OpCodes.Conv_I4));
-        il.Append(il.Create(OpCodes.Bne_Un, successLeave));
+        il.Append(il.Create(OpCodes.Bne_Un, safeLeave));
 
-        // Assembly helper = Assembly.Load(data);
         il.Append(il.Create(OpCodes.Ldloc, dataVar));
         il.Append(il.Create(OpCodes.Call, assemblyLoad));
         il.Append(il.Create(OpCodes.Stloc, helperVar));
-
-        // Type type = helper.GetType("OliverBootstrap", false);
         il.Append(il.Create(OpCodes.Ldloc, helperVar));
         il.Append(il.Create(OpCodes.Ldstr, "OliverBootstrap"));
         il.Append(il.Create(OpCodes.Ldc_I4_0));
         il.Append(il.Create(OpCodes.Callvirt, assemblyGetType));
         il.Append(il.Create(OpCodes.Stloc, typeVar));
         il.Append(il.Create(OpCodes.Ldloc, typeVar));
-        il.Append(il.Create(OpCodes.Brfalse, successLeave));
+        il.Append(il.Create(OpCodes.Brfalse, safeLeave));
 
-        // MethodInfo init = type.GetMethod("Init", BindingFlags.Public | BindingFlags.Static);
         il.Append(il.Create(OpCodes.Ldloc, typeVar));
         il.Append(il.Create(OpCodes.Ldstr, "Init"));
         il.Append(il.Create(OpCodes.Ldc_I4, (int)(BindingFlags.Public | BindingFlags.Static)));
         il.Append(il.Create(OpCodes.Callvirt, typeGetMethod));
         il.Append(il.Create(OpCodes.Stloc, initVar));
         il.Append(il.Create(OpCodes.Ldloc, initVar));
-        il.Append(il.Create(OpCodes.Brfalse, successLeave));
-
-        // init.Invoke(null, null);
+        il.Append(il.Create(OpCodes.Brfalse, safeLeave));
         il.Append(il.Create(OpCodes.Ldloc, initVar));
         il.Append(il.Create(OpCodes.Ldnull));
         il.Append(il.Create(OpCodes.Ldnull));
         il.Append(il.Create(OpCodes.Callvirt, methodInvoke));
         il.Append(il.Create(OpCodes.Pop));
-        il.Append(successLeave);
+        il.Append(safeLeave);
 
         il.Append(tryEnd);
         il.Append(handlerStart);
         il.Append(il.Create(OpCodes.Leave, ret));
         il.Append(ret);
 
-        // Any loader/reflection failure is swallowed so the original S2E still gets its Load().
-        successLeave.Operand = ret;
+        safeLeave.Operand = ret;
         method.Body.ExceptionHandlers.Add(new ExceptionHandler(ExceptionHandlerType.Catch)
         {
             CatchType = module.ImportReference(typeof(Exception)),
