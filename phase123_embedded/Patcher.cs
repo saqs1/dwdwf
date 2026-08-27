@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -24,9 +25,21 @@ internal static class Program
         if (!File.Exists(input)) throw new FileNotFoundException("Original S2E DLL not found", input);
         if (!File.Exists(helperPath)) throw new FileNotFoundException("Embedded helper DLL not found", helperPath);
 
-        var rp = new ReaderParameters { ReadWrite = false, InMemory = true };
+        using var resolver = new OliverAssemblyResolver();
+        resolver.AddSearchDirectory(Path.GetDirectoryName(Path.GetFullPath(input))!);
+        string il2cppRefs = Path.GetFullPath("deps-util/IL2CPP_net6");
+        if (Directory.Exists(il2cppRefs)) resolver.AddSearchDirectory(il2cppRefs);
+
+        var rp = new ReaderParameters
+        {
+            ReadWrite = false,
+            InMemory = true,
+            AssemblyResolver = resolver
+        };
+
         using var asm = AssemblyDefinition.ReadAssembly(input, rp);
         ModuleDefinition module = asm.MainModule;
+        resolver.PrepareAssemblyCSharpStub(module);
 
         TypeDefinition plugin = module.Types.FirstOrDefault(t => t.Name == "Plugin");
         if (plugin == null) throw new Exception("Original S2E Plugin type was not found");
@@ -48,13 +61,6 @@ internal static class Program
         if (oldLoader != null) module.Types.Remove(oldLoader);
 
         MethodDefinition init = AddSafeEmbeddedLoader(module);
-
-        if (load.Body.Instructions.Any(i =>
-            i.OpCode == OpCodes.Call &&
-            i.Operand is MethodReference mr &&
-            mr.Name == init.Name &&
-            mr.DeclaringType.Name == init.DeclaringType.Name))
-            throw new Exception("Plugin.Load is already patched");
 
         ILProcessor loadIl = load.Body.GetILProcessor();
         Instruction first = load.Body.Instructions.First();
@@ -127,7 +133,6 @@ internal static class Program
             typeof(MethodBase).GetMethod(nameof(MethodBase.Invoke), new[] { typeof(object), typeof(object[]) })!);
 
         ILProcessor il = method.Body.GetILProcessor();
-
         Instruction tryStart = il.Create(OpCodes.Nop);
         Instruction loopCheck = il.Create(OpCodes.Ldloc, totalVar);
         Instruction loopEnd = il.Create(OpCodes.Nop);
@@ -226,5 +231,140 @@ internal static class Program
         });
 
         return method;
+    }
+}
+
+internal sealed class OliverAssemblyResolver : IAssemblyResolver
+{
+    private readonly DefaultAssemblyResolver _fallback = new DefaultAssemblyResolver();
+    private AssemblyDefinition? _assemblyCSharpStub;
+
+    public void AddSearchDirectory(string path)
+    {
+        if (Directory.Exists(path)) _fallback.AddSearchDirectory(path);
+    }
+
+    public void PrepareAssemblyCSharpStub(ModuleDefinition source)
+    {
+        var name = new AssemblyNameDefinition("Assembly-CSharp", new Version(0, 0, 0, 0));
+        _assemblyCSharpStub = AssemblyDefinition.CreateAssembly(name, "Assembly-CSharp", ModuleKind.Dll);
+        ModuleDefinition stub = _assemblyCSharpStub.MainModule;
+
+        var enumTypes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (TypeDefinition type in source.Types)
+            CollectConstantEnumTypes(type, enumTypes);
+
+        var refs = source.GetTypeReferences()
+            .Select(Unwrap)
+            .Where(IsAssemblyCSharpType)
+            .GroupBy(t => t.FullName, StringComparer.Ordinal)
+            .Select(g => g.First())
+            .ToList();
+
+        foreach (TypeReference tr in refs)
+        {
+            bool isEnum = enumTypes.Contains(tr.FullName);
+            AddStubType(stub, tr, isEnum);
+        }
+    }
+
+    private static void CollectConstantEnumTypes(TypeDefinition type, HashSet<string> enumTypes)
+    {
+        foreach (MethodDefinition method in type.Methods)
+        {
+            foreach (ParameterDefinition parameter in method.Parameters)
+            {
+                if (!parameter.HasConstant) continue;
+                TypeReference tr = Unwrap(parameter.ParameterType);
+                if (IsAssemblyCSharpType(tr)) enumTypes.Add(tr.FullName);
+            }
+        }
+        foreach (TypeDefinition nested in type.NestedTypes)
+            CollectConstantEnumTypes(nested, enumTypes);
+    }
+
+    private static TypeReference Unwrap(TypeReference type)
+    {
+        while (type is TypeSpecification spec) type = spec.ElementType;
+        return type;
+    }
+
+    private static bool IsAssemblyCSharpType(TypeReference type)
+    {
+        IMetadataScope? scope = type.Scope;
+        return scope is AssemblyNameReference anr && anr.Name == "Assembly-CSharp";
+    }
+
+    private static void AddStubType(ModuleDefinition stub, TypeReference reference, bool isEnum)
+    {
+        if (reference.DeclaringType != null)
+        {
+            TypeReference parentRef = Unwrap(reference.DeclaringType);
+            TypeDefinition parent = FindOrCreateTopLevel(stub, parentRef.Namespace, parentRef.Name, false);
+            if (parent.NestedTypes.Any(t => t.Name == reference.Name)) return;
+            TypeReference baseType = isEnum ? stub.ImportReference(typeof(Enum)) : stub.TypeSystem.Object;
+            var nested = new TypeDefinition(
+                string.Empty,
+                reference.Name,
+                Mono.Cecil.TypeAttributes.NestedPublic | (isEnum ? Mono.Cecil.TypeAttributes.Sealed : Mono.Cecil.TypeAttributes.Class),
+                baseType);
+            if (isEnum) AddEnumValueField(stub, nested);
+            parent.NestedTypes.Add(nested);
+            return;
+        }
+
+        FindOrCreateTopLevel(stub, reference.Namespace, reference.Name, isEnum);
+    }
+
+    private static TypeDefinition FindOrCreateTopLevel(ModuleDefinition stub, string ns, string name, bool isEnum)
+    {
+        TypeDefinition? existing = stub.Types.FirstOrDefault(t => t.Namespace == ns && t.Name == name);
+        if (existing != null)
+        {
+            if (isEnum && existing.BaseType?.FullName != typeof(Enum).FullName)
+            {
+                existing.BaseType = stub.ImportReference(typeof(Enum));
+                existing.Attributes |= Mono.Cecil.TypeAttributes.Sealed;
+                AddEnumValueField(stub, existing);
+            }
+            return existing;
+        }
+
+        TypeReference baseType = isEnum ? stub.ImportReference(typeof(Enum)) : stub.TypeSystem.Object;
+        var created = new TypeDefinition(
+            ns ?? string.Empty,
+            name,
+            Mono.Cecil.TypeAttributes.Public | (isEnum ? Mono.Cecil.TypeAttributes.Sealed : Mono.Cecil.TypeAttributes.Class),
+            baseType);
+        if (isEnum) AddEnumValueField(stub, created);
+        stub.Types.Add(created);
+        return created;
+    }
+
+    private static void AddEnumValueField(ModuleDefinition stub, TypeDefinition type)
+    {
+        if (type.Fields.Any(f => f.Name == "value__")) return;
+        type.Fields.Add(new FieldDefinition(
+            "value__",
+            Mono.Cecil.FieldAttributes.Public | Mono.Cecil.FieldAttributes.SpecialName | Mono.Cecil.FieldAttributes.RTSpecialName,
+            stub.TypeSystem.Int32));
+    }
+
+    public AssemblyDefinition Resolve(AssemblyNameReference name)
+    {
+        if (name.Name == "Assembly-CSharp" && _assemblyCSharpStub != null) return _assemblyCSharpStub;
+        return _fallback.Resolve(name);
+    }
+
+    public AssemblyDefinition Resolve(AssemblyNameReference name, ReaderParameters parameters)
+    {
+        if (name.Name == "Assembly-CSharp" && _assemblyCSharpStub != null) return _assemblyCSharpStub;
+        return _fallback.Resolve(name, parameters);
+    }
+
+    public void Dispose()
+    {
+        _assemblyCSharpStub?.Dispose();
+        _fallback.Dispose();
     }
 }
