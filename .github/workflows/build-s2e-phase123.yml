@@ -39,7 +39,7 @@ jobs:
           dotnet restore OliverPhase123.csproj
           dotnet build OliverPhase123.csproj -c Release --no-restore
 
-      - name: Prepare performance-safe package
+      - name: Prepare restored v0.1.5 base package
         run: |
           rm -rf phase123_embedded/out
           mkdir -p phase123_embedded/out
@@ -49,10 +49,10 @@ jobs:
           sha256sum phase123_embedded/out/s2e-supermarket-simulator.dll phase123_embedded/out/OliverS2EPhase123.dll | tee phase123_embedded/out/SHA256.txt
           ls -lh phase123_embedded/out/s2e-supermarket-simulator.dll phase123_embedded/out/OliverS2EPhase123.dll
 
-      - name: Upload performance-safe package
+      - name: Upload restored v0.1.5 base package
         uses: actions/upload-artifact@v4
         with:
-          name: S2E-Phase123-PERFORMANCE-SAFE
+          name: S2E-v0.3.0-RESTORED-v0.1.5-BASE
           path: |
             phase123_embedded/out/s2e-supermarket-simulator.dll
             phase123_embedded/out/OliverS2EPhase123.dll
