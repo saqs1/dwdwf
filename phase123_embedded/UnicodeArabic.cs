@@ -1,17 +1,8 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Reflection;
-using BepInEx;
-using BepInEx.Logging;
-using HarmonyLib;
-using Il2CppInterop.Runtime;
-using Il2CppInterop.Runtime.Injection;
 using Il2CppInterop.Runtime.InteropTypes;
-using Il2CppInterop.Runtime.InteropTypes.Arrays;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
 using UnityEngine;
 
 internal static class OliverUnicodeText
@@ -19,6 +10,8 @@ internal static class OliverUnicodeText
     private static object _primaryFontAsset;
     private static object _historicFontAsset;
     private static object _symbolFontAsset;
+    private static object _emojiFontAsset;
+    private static Type _textMeshProType;
     private static Type _tmpFontAssetType;
     private static bool _fontAttempted;
 
@@ -28,45 +21,98 @@ internal static class OliverUnicodeText
         bool needsUnicode = original.Any(ch => ch > 127);
         if (!needsUnicode) return;
 
-        Type wrapperType = AccessTools.TypeByName("TMPro.TextMeshPro");
-        if (wrapperType == null) return;
-        object tmp = Activator.CreateInstance(wrapperType, new object[] { ((Il2CppObjectBase)baseComponent).Pointer });
+        // Resolve exact managed wrapper types only. Never use AccessTools.TypeByName here:
+        // it scans every loaded Unity assembly and causes ReflectionTypeLoadException spam on IL2CPP.
+        _textMeshProType ??= FindExactType("TMPro.TextMeshPro");
+        if (_textMeshProType == null)
+        {
+            OliverBootstrap.LogSource?.LogWarning("[OLIVER] TMPro.TextMeshPro wrapper type was not found.");
+            return;
+        }
+
+        object tmp;
+        try
+        {
+            tmp = Activator.CreateInstance(_textMeshProType, new object[] { ((Il2CppObjectBase)baseComponent).Pointer });
+        }
+        catch (Exception ex)
+        {
+            OliverBootstrap.LogSource?.LogWarning($"[OLIVER] Could not wrap BillboardText as TextMeshPro: {ex.Message}");
+            return;
+        }
         if (tmp == null) return;
 
         EnsureFonts();
-        if (_primaryFontAsset != null)
+
+        try
         {
-            PropertyInfo fontProp = AccessTools.Property(wrapperType, "font");
-            fontProp?.SetValue(tmp, _primaryFontAsset);
+            if (_primaryFontAsset != null)
+            {
+                PropertyInfo fontProp = GetProperty(_textMeshProType, "font");
+                if (fontProp != null && fontProp.CanWrite)
+                    fontProp.SetValue(tmp, _primaryFontAsset);
+            }
+
+            string output = ArabicPresentationShaper.ContainsArabic(original)
+                ? ArabicPresentationShaper.ShapeForLTRBillboard(original)
+                : original;
+
+            PropertyInfo textProp = GetProperty(_textMeshProType, "text");
+            if (textProp != null && textProp.CanWrite)
+                textProp.SetValue(tmp, output);
+
+            PropertyInfo rtl = GetProperty(_textMeshProType, "isRightToLeftText");
+            if (rtl != null && rtl.CanWrite) rtl.SetValue(tmp, false);
+
+            PropertyInfo richText = GetProperty(_textMeshProType, "richText");
+            if (richText != null && richText.CanWrite) richText.SetValue(tmp, false);
+
+            MethodInfo force = FindForceMeshUpdate(_textMeshProType);
+            if (force != null)
+            {
+                ParameterInfo[] ps = force.GetParameters();
+                if (ps.Length == 0) force.Invoke(tmp, null);
+                else if (ps.Length == 1) force.Invoke(tmp, new object[] { false });
+                else force.Invoke(tmp, new object[] { false, false });
+            }
         }
-
-        string output = ArabicPresentationShaper.ContainsArabic(original)
-            ? ArabicPresentationShaper.ShapeForLTRBillboard(original)
-            : original;
-
-        AccessTools.Property(wrapperType, "text")?.SetValue(tmp, output);
-        PropertyInfo rtl = AccessTools.Property(wrapperType, "isRightToLeftText");
-        if (rtl != null && rtl.CanWrite) rtl.SetValue(tmp, false);
-        AccessTools.Property(wrapperType, "richText")?.SetValue(tmp, false);
-        MethodInfo force = wrapperType.GetMethod("ForceMeshUpdate", new[] { typeof(bool), typeof(bool) });
-        force?.Invoke(tmp, new object[] { false, false });
+        catch (Exception ex)
+        {
+            OliverBootstrap.LogSource?.LogWarning($"[OLIVER] Unicode text apply skipped safely: {ex.Message}");
+        }
     }
 
     private static void EnsureFonts()
     {
         if (_fontAttempted) return;
         _fontAttempted = true;
+
         try
         {
-            _tmpFontAssetType = AccessTools.TypeByName("TMPro.TMP_FontAsset");
-            if (_tmpFontAssetType == null) return;
+            _tmpFontAssetType = FindExactType("TMPro.TMP_FontAsset");
+            if (_tmpFontAssetType == null)
+            {
+                OliverBootstrap.LogSource?.LogWarning("[OLIVER] TMPro.TMP_FontAsset wrapper type was not found.");
+                return;
+            }
+
             _primaryFontAsset = CreateDynamicFontAsset(new[] { "Tahoma", "Segoe UI", "Arial" });
             _historicFontAsset = CreateDynamicFontAsset(new[] { "Segoe UI Historic" });
             _symbolFontAsset = CreateDynamicFontAsset(new[] { "Segoe UI Symbol" });
+            _emojiFontAsset = CreateDynamicFontAsset(new[] { "Segoe UI Emoji" });
+
             AddFallback(_primaryFontAsset, _historicFontAsset);
             AddFallback(_primaryFontAsset, _symbolFontAsset);
+            AddFallback(_primaryFontAsset, _emojiFontAsset);
+
             if (_primaryFontAsset != null)
-                OliverBootstrap.LogSource?.LogInfo("[OLIVER] Arabic/Unicode dynamic TMP font ready.");
+            {
+                OliverBootstrap.LogSource?.LogInfo("[OLIVER] Arabic/Unicode dynamic TMP font ready (Arabic + Historic + Symbol + Emoji fallbacks).");
+            }
+            else
+            {
+                OliverBootstrap.LogSource?.LogWarning("[OLIVER] Could not create the primary dynamic TMP font asset.");
+            }
         }
         catch (Exception ex)
         {
@@ -88,30 +134,39 @@ internal static class OliverUnicodeText
         }
         if (osFont == null) return null;
 
-        MethodInfo create = _tmpFontAssetType.GetMethod("CreateFontAsset", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(Font) }, null);
-        if (create == null)
+        MethodInfo create = null;
+        try
         {
-            create = _tmpFontAssetType.GetMethods(BindingFlags.Public | BindingFlags.Static)
-                .FirstOrDefault(m => m.Name == "CreateFontAsset" && m.GetParameters().Length > 0 && m.GetParameters()[0].ParameterType == typeof(Font));
+            MethodInfo[] methods = _tmpFontAssetType.GetMethods(BindingFlags.Public | BindingFlags.Static);
+            create = methods.FirstOrDefault(m =>
+            {
+                if (!string.Equals(m.Name, "CreateFontAsset", StringComparison.Ordinal)) return false;
+                ParameterInfo[] ps = m.GetParameters();
+                return ps.Length > 0 && ps[0].ParameterType == typeof(Font);
+            });
         }
+        catch { }
         if (create == null) return null;
 
-        ParameterInfo[] ps = create.GetParameters();
-        object[] args = new object[ps.Length];
+        ParameterInfo[] parameters = create.GetParameters();
+        object[] args = new object[parameters.Length];
         args[0] = osFont;
-        for (int i = 1; i < ps.Length; i++)
+        for (int i = 1; i < parameters.Length; i++)
         {
-            if (ps[i].HasDefaultValue) args[i] = ps[i].DefaultValue;
-            else if (ps[i].ParameterType.IsEnum) args[i] = Activator.CreateInstance(ps[i].ParameterType);
-            else if (ps[i].ParameterType == typeof(int)) args[i] = 0;
-            else if (ps[i].ParameterType == typeof(float)) args[i] = 0f;
-            else if (ps[i].ParameterType == typeof(bool)) args[i] = false;
+            if (parameters[i].HasDefaultValue) args[i] = parameters[i].DefaultValue;
+            else if (parameters[i].ParameterType.IsEnum) args[i] = Activator.CreateInstance(parameters[i].ParameterType);
+            else if (parameters[i].ParameterType == typeof(int)) args[i] = 0;
+            else if (parameters[i].ParameterType == typeof(float)) args[i] = 0f;
+            else if (parameters[i].ParameterType == typeof(bool)) args[i] = false;
             else args[i] = null;
         }
 
-        object asset = create.Invoke(null, args);
+        object asset;
+        try { asset = create.Invoke(null, args); }
+        catch { return null; }
         if (asset == null) return null;
-        PropertyInfo pop = AccessTools.Property(_tmpFontAssetType, "atlasPopulationMode");
+
+        PropertyInfo pop = GetProperty(_tmpFontAssetType, "atlasPopulationMode");
         if (pop != null && pop.CanWrite && pop.PropertyType.IsEnum)
         {
             try { pop.SetValue(asset, Enum.Parse(pop.PropertyType, "Dynamic")); } catch { }
@@ -124,13 +179,70 @@ internal static class OliverUnicodeText
         if (primary == null || fallback == null || _tmpFontAssetType == null) return;
         try
         {
-            PropertyInfo prop = AccessTools.Property(_tmpFontAssetType, "fallbackFontAssetTable");
+            PropertyInfo prop = GetProperty(_tmpFontAssetType, "fallbackFontAssetTable");
             object list = prop?.GetValue(primary);
             if (list == null) return;
-            MethodInfo add = list.GetType().GetMethod("Add");
+
+            MethodInfo add = list.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                .FirstOrDefault(m => string.Equals(m.Name, "Add", StringComparison.Ordinal) && m.GetParameters().Length == 1);
             add?.Invoke(list, new[] { fallback });
         }
         catch { }
+    }
+
+    private static Type FindExactType(string fullName)
+    {
+        try
+        {
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (assembly == null) continue;
+                try
+                {
+                    Type type = assembly.GetType(fullName, false, false);
+                    if (type != null) return type;
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static PropertyInfo GetProperty(Type type, string name)
+    {
+        try
+        {
+            Type current = type;
+            while (current != null)
+            {
+                PropertyInfo prop = current.GetProperty(name,
+                    BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                if (prop != null) return prop;
+                current = current.BaseType;
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    private static MethodInfo FindForceMeshUpdate(Type type)
+    {
+        try
+        {
+            Type current = type;
+            while (current != null)
+            {
+                MethodInfo method = current.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                    .Where(m => string.Equals(m.Name, "ForceMeshUpdate", StringComparison.Ordinal))
+                    .OrderByDescending(m => m.GetParameters().Length)
+                    .FirstOrDefault(m => m.GetParameters().Length <= 2);
+                if (method != null) return method;
+                current = current.BaseType;
+            }
+        }
+        catch { }
+        return null;
     }
 }
 
