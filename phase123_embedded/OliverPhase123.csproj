@@ -16,7 +16,7 @@
     <Compile Include="BootstrapPatches.cs" />
     <Compile Include="ProfileFrame.cs" />
     <Compile Include="UnicodeArabic.cs" />
-    <Compile Include="HttpCompatBridge.cs" />
+    <Compile Include="HttpCompatBridgeV2.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.754" IncludeAssets="compile" />
