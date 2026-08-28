@@ -72,6 +72,25 @@ public static class OliverBootstrap
             _harmony.Patch(attachText, postfix: new HarmonyMethod(textPostfix));
             _harmony.Patch(attachImage, postfix: new HarmonyMethod(imagePostfix));
 
+            // Passive compatibility patch only: original S2E still owns port 55001 and
+            // still performs the spawn. We only normalize alternate metadata keys in
+            // the request body before S2E reads name/avatarUrl/headAvatarUrl.
+            Type requestHandler = FindExactType("RequestHandler");
+            MethodInfo handleRequest = requestHandler == null ? null : FindMethod(requestHandler, "HandleRequest");
+            MethodInfo metadataPrefix = typeof(OliverRequestMetadataCompat).GetMethod(
+                nameof(OliverRequestMetadataCompat.BeforeHandleRequest),
+                BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+
+            if (handleRequest != null && metadataPrefix != null)
+            {
+                _harmony.Patch(handleRequest, prefix: new HarmonyMethod(metadataPrefix));
+                LogSource.LogInfo("[OLIVER] Passive spawn metadata compatibility ACTIVE (no HTTP bridge/proxy).");
+            }
+            else
+            {
+                LogSource.LogWarning($"[OLIVER] Spawn metadata compatibility not patched. RequestHandler={requestHandler != null}, HandleRequest={handleRequest != null}.");
+            }
+
             _initialized = true;
             LogSource.LogInfo("[OLIVER] PlayerUtilities detected. v0.1.5 billboard behavior RESTORED and ACTIVE.");
             LogSource.LogInfo("[OLIVER] 130% profile + Auto Fit + PNG frame unchanged; Arabic fix is text-only.");
