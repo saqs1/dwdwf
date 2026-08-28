@@ -33,25 +33,51 @@ jobs:
           gzip -dc phase123_embedded/original/s2e-original.dll.gz > phase123_embedded/original/s2e-original.dll
           echo "ec35cacffedc712abd1b6800b9ddb967319cda882cd0b78135648470e645b5f9  phase123_embedded/original/s2e-original.dll" | sha256sum -c -
 
+      - name: Patch ONLY S2E loopback port 55001 to internal 55101
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('phase123_embedded/original/s2e-original.dll')
+          data = p.read_bytes()
+          old = 'http://127.0.0.1:55001/'.encode('utf-16le')
+          new = 'http://127.0.0.1:55101/'.encode('utf-16le')
+          count = data.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one S2E 55001 prefix, found {count}')
+          patched = data.replace(old, new)
+          if patched.count(old) != 0 or patched.count(new) != 1:
+              raise SystemExit('Port patch verification failed')
+          p.write_bytes(patched)
+          print('Verified minimal port patch: public bridge=55001, original S2E internal=55101')
+          PY
+          sha256sum phase123_embedded/original/s2e-original.dll
+
       - name: Build standalone OLIVER Phase123 plugin
         working-directory: phase123_embedded
         run: |
           dotnet restore OliverPhase123.csproj
           dotnet build OliverPhase123.csproj -c Release --no-restore
 
-      - name: Prepare safe package
+      - name: Prepare compatibility package
         run: |
           mkdir -p phase123_embedded/out
           cp phase123_embedded/original/s2e-original.dll phase123_embedded/out/s2e-supermarket-simulator.dll
           cp phase123_embedded/bin/Release/net6.0/OliverS2EPhase123.dll phase123_embedded/out/OliverS2EPhase123.dll
-          echo "ec35cacffedc712abd1b6800b9ddb967319cda882cd0b78135648470e645b5f9  phase123_embedded/out/s2e-supermarket-simulator.dll" | sha256sum -c -
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('phase123_embedded/out/s2e-supermarket-simulator.dll')
+          d = p.read_bytes()
+          assert d.count('http://127.0.0.1:55001/'.encode('utf-16le')) == 0
+          assert d.count('http://127.0.0.1:55101/'.encode('utf-16le')) == 1
+          print('Packaged S2E port patch verified')
+          PY
           sha256sum phase123_embedded/out/s2e-supermarket-simulator.dll phase123_embedded/out/OliverS2EPhase123.dll | tee phase123_embedded/out/SHA256.txt
           ls -lh phase123_embedded/out/s2e-supermarket-simulator.dll phase123_embedded/out/OliverS2EPhase123.dll
 
-      - name: Upload safe package
+      - name: Upload compatibility package
         uses: actions/upload-artifact@v4
         with:
-          name: S2E-Phase123-Standalone-SAFE
+          name: S2E-Phase123-HTTP-COMPAT
           path: |
             phase123_embedded/out/s2e-supermarket-simulator.dll
             phase123_embedded/out/OliverS2EPhase123.dll
