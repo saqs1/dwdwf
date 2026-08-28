@@ -7,8 +7,8 @@ public sealed class OliverPhase123Plugin : BasePlugin
 {
     public override void Load()
     {
-        // v0.3.0 restores the exact proven v0.1.5 billboard patch path.
-        // Original S2E remains responsible for HTTP/spawn/name/avatar creation.
+        // v0.3.0: exact proven v0.1.5 billboard path + text-only Arabic repair.
+        // Original S2E remains solely responsible for HTTP/spawn/name/avatar creation.
         OliverBootstrap.BeginDeferred();
         OliverBootstrap.TryInitializeAfterS2E();
     }
