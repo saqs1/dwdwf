@@ -32,7 +32,7 @@ public static class OliverBootstrap
             LogSource.LogInfo("[OLIVER] Passive visual driver ACTIVE. Zero Harmony patches on S2E billboard creation.");
             LogSource.LogInfo("[OLIVER] Original S2E creates names/images unchanged; OLIVER only enhances them after they exist.");
             LogSource.LogInfo("[OLIVER] Arabic/Unicode + 130% profile + Auto Fit + PNG frame enabled passively.");
-            LogSource.LogInfo("[OLIVER] Original S2E HTTP port remains 55001.");
+            LogSource.LogInfo("[OLIVER] HTTP compatibility mode: public 55001 -> internal original S2E 55101.");
         }
         catch (Exception ex)
         {
@@ -42,7 +42,6 @@ public static class OliverBootstrap
 
     internal static bool TryInitializeAfterS2E()
     {
-        // Kept for plugin compatibility. No method patching is performed.
         return _started;
     }
 }
@@ -156,7 +155,6 @@ public sealed class OliverPassiveScanDriver : MonoBehaviour
     {
         try
         {
-            // Original S2E is 0.30. OLIVER target = 130% => 0.39.
             go.transform.localScale = Vector3.one * 0.39f;
 
             if (go.GetComponent<OliverProfileVisualDriver>() == null)
