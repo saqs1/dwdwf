@@ -72,9 +72,8 @@ public static class OliverBootstrap
             _harmony.Patch(attachText, postfix: new HarmonyMethod(textPostfix));
             _harmony.Patch(attachImage, postfix: new HarmonyMethod(imagePostfix));
 
-            // Passive compatibility patch only: original S2E still owns port 55001 and
-            // still performs the spawn. We only normalize alternate metadata keys in
-            // the request body before S2E reads name/avatarUrl/headAvatarUrl.
+            // Passive compatibility only. Original S2E still owns port 55001 and performs
+            // the spawn. We normalize explicit metadata already present in the request.
             Type requestHandler = FindExactType("RequestHandler");
             MethodInfo handleRequest = requestHandler == null ? null : FindMethod(requestHandler, "HandleRequest");
             MethodInfo metadataPrefix = typeof(OliverRequestMetadataCompat).GetMethod(
@@ -85,6 +84,7 @@ public static class OliverBootstrap
             {
                 _harmony.Patch(handleRequest, prefix: new HarmonyMethod(metadataPrefix));
                 LogSource.LogInfo("[OLIVER] Passive spawn metadata compatibility ACTIVE (no HTTP bridge/proxy).");
+                LogSource.LogInfo("[OLIVER] Verified TikTok country metadata support ACTIVE; UNKNOWN countries stay hidden.");
             }
             else
             {
@@ -93,7 +93,7 @@ public static class OliverBootstrap
 
             _initialized = true;
             LogSource.LogInfo("[OLIVER] PlayerUtilities detected. v0.1.5 billboard behavior RESTORED and ACTIVE.");
-            LogSource.LogInfo("[OLIVER] 130% profile + Auto Fit + PNG frame unchanged; Arabic fix is text-only.");
+            LogSource.LogInfo("[OLIVER] 130% profile + Auto Fit + PNG frame unchanged; country overlay is additive.");
             LogSource.LogInfo("[OLIVER] Original S2E HTTP port remains 55001.");
             return true;
         }
@@ -147,6 +147,10 @@ internal static class OliverS2EPatches
             string displayText = __1;
             if (parent == null || string.IsNullOrEmpty(displayText)) return;
 
+            string country = OliverCountryContext.ResolveByName(displayText);
+            if (!string.IsNullOrWhiteSpace(country))
+                OliverCountryContext.BindParent(parent.GetInstanceID(), country);
+
             Transform textTransform = parent.transform.Find("BillboardText");
             if (textTransform == null) return;
 
@@ -177,6 +181,7 @@ internal static class OliverS2EPatches
         try
         {
             GameObject parent = __0;
+            string imageUrl = __1;
             if (parent == null) return;
 
             Transform newest = null;
@@ -201,6 +206,12 @@ internal static class OliverS2EPatches
 
             // Exact proven v0.1.5 behavior: original S2E scale 0.30 x 130% = 0.39.
             newest.localScale = Vector3.one * 0.39f;
+
+            string country = OliverCountryContext.ResolveByAvatar(imageUrl);
+            if (string.IsNullOrWhiteSpace(country))
+                country = OliverCountryContext.ResolveParent(parent.GetInstanceID());
+            if (!string.IsNullOrWhiteSpace(country))
+                OliverCountryContext.BindImage(newest.gameObject.GetInstanceID(), country);
 
             if (newest.gameObject.GetComponent<OliverProfileVisualDriver>() == null)
                 newest.gameObject.AddComponent<OliverProfileVisualDriver>();
