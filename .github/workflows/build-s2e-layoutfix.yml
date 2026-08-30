@@ -1,0 +1,56 @@
+name: Build S2E Layout Fix
+
+on:
+  push:
+    branches: [ s2e-phase123 ]
+    paths:
+      - 'layoutfix/**'
+      - '.github/workflows/build-s2e-layoutfix.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 6.0.x
+
+      - name: Checkout IL2CPP compile references
+        uses: actions/checkout@v4
+        with:
+          repository: BepInEx/BepInEx.Utility.IL2CPP
+          path: layoutfix/deps-util
+
+      - name: Build OLIVER layout-only plugin
+        working-directory: layoutfix
+        run: |
+          dotnet restore OliverS2ELayoutFix.csproj
+          dotnet build OliverS2ELayoutFix.csproj -c Release --no-restore
+
+      - name: Prepare package
+        run: |
+          rm -rf layoutfix/out
+          mkdir -p layoutfix/out
+          cp layoutfix/bin/Release/net6.0/OliverS2ELayoutFix.dll layoutfix/out/OliverS2ELayoutFix.dll
+          sha256sum layoutfix/out/OliverS2ELayoutFix.dll | tee layoutfix/out/SHA256.txt
+          cat > layoutfix/out/README_AR.txt <<'EOF'
+          OLIVER S2E Layout Fix 1.0.0
+          - Game-mod layout only.
+          - Does not touch OLIVER TIK, HTTP, TikTok metadata, country detection, Arabic text, spawn logic, or SixLabors.ImageSharp.dll.
+          - Avatar size = 0.27 and separated vertically from username.
+          - Duplicate BillboardText objects are hidden safely; image-rendered username is preferred for Unicode/Arabic.
+          - Copy OliverS2ELayoutFix.dll into BepInEx/plugins.
+          EOF
+          ls -lh layoutfix/out/*
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: OLIVER-S2E-LAYOUT-FIX-1.0.0
+          path: layoutfix/out/*
+          if-no-files-found: error
