@@ -17,6 +17,7 @@
     <Compile Include="ProfileFrame.cs" />
     <Compile Include="UnicodeArabic.cs" />
     <Compile Include="RequestMetadataCompat.cs" />
+    <Compile Include="CountrySupport.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.754" IncludeAssets="compile" />
