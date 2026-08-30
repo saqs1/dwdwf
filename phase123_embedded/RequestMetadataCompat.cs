@@ -22,6 +22,11 @@ internal static class OliverRequestMetadataCompat
         "headAvatarUrl", "headUrl", "headAvatar", "headImageUrl"
     };
 
+    private static readonly string[] CountryAliases =
+    {
+        "countryCode", "country_code", "region", "regionCode", "region_code", "userCountryCode", "userRegion"
+    };
+
     private static int _diagCount;
 
     internal static void BeforeHandleRequest(string __0, ref string __1)
@@ -35,6 +40,9 @@ internal static class OliverRequestMetadataCompat
             JsonNode root = ParseMaybeNested(body);
             if (root == null) return;
 
+            string recoveredCountryRaw = FindAlias(root, CountryAliases, 0);
+            string recoveredCountry = OliverCountryContext.NormalizeVerifiedCountry(recoveredCountryRaw);
+
             JsonObject canonical = root as JsonObject;
             if (canonical == null)
             {
@@ -43,37 +51,60 @@ internal static class OliverRequestMetadataCompat
                 string recoveredName = FindAlias(root, NameAliases, 0);
                 string recoveredAvatar = FindAlias(root, AvatarAliases, 0);
                 string recoveredHead = FindAlias(root, HeadAliases, 0);
-                if (!Has(recoveredName) && !Has(recoveredAvatar) && !Has(recoveredHead)) return;
+                if (!Has(recoveredName) && !Has(recoveredAvatar) && !Has(recoveredHead) && !Has(recoveredCountry)) return;
                 canonical = new JsonObject();
                 if (Has(recoveredName)) canonical["name"] = recoveredName;
                 if (Has(recoveredAvatar)) canonical["avatarUrl"] = recoveredAvatar;
                 if (Has(recoveredHead)) canonical["headAvatarUrl"] = recoveredHead;
+                if (Has(recoveredCountry)) canonical["countryCode"] = recoveredCountry;
             }
             else
             {
                 PutIfMissing(canonical, "name", FindAlias(root, NameAliases, 0));
                 PutIfMissing(canonical, "avatarUrl", FindAlias(root, AvatarAliases, 0));
                 PutIfMissing(canonical, "headAvatarUrl", FindAlias(root, HeadAliases, 0));
+
+                string currentCountry = OliverCountryContext.NormalizeVerifiedCountry(Get(canonical, "countryCode"));
+                if (!Has(currentCountry) && Has(recoveredCountry)) canonical["countryCode"] = recoveredCountry;
+                else if (Has(currentCountry)) canonical["countryCode"] = currentCountry;
             }
 
             string name = Get(canonical, "name");
             string avatar = Get(canonical, "avatarUrl");
             string head = Get(canonical, "headAvatarUrl");
+            string country = OliverCountryContext.NormalizeVerifiedCountry(Get(canonical, "countryCode"));
+
+            // Country is accepted ONLY from an explicit field in the original event payload.
+            // No guessing from username/language/IP/timezone/CDN/phone/streamer location.
+            if (Has(country))
+            {
+                canonical["countryCode"] = country;
+                OliverCountryContext.Remember(name, avatar, country);
+            }
+            else
+            {
+                canonical.Remove("countryCode");
+            }
 
             // Never replace a valid avatar with head image. The original S2E already
             // gives avatarUrl priority and clears headAvatarUrl when avatar exists.
             __1 = canonical.ToJsonString(new JsonSerializerOptions { WriteIndented = false });
 
-            if (_diagCount < 4)
+            if (_diagCount < 6)
             {
                 _diagCount++;
                 OliverBootstrap.LogSource?.LogInfo(
-                    $"[OLIVER META] Spawn metadata normalized: name={(Has(name) ? "YES" : "NO")}, avatar={(Has(avatar) ? "YES" : "NO")}, head={(Has(head) ? "YES" : "NO")}.");
+                    $"[OLIVER META] Spawn metadata normalized: name={(Has(name) ? "YES" : "NO")}, avatar={(Has(avatar) ? "YES" : "NO")}, head={(Has(head) ? "YES" : "NO")}, country={(Has(country) ? country : "UNKNOWN")}.");
+
+                if (Has(country))
+                    OliverBootstrap.LogSource?.LogInfo($"[OLIVER COUNTRY] country={country} source=TIKTOK_EVENT verified=YES");
+                else
+                    OliverBootstrap.LogSource?.LogInfo("[OLIVER COUNTRY] country=UNKNOWN source=TIKTOK_EVENT verified=NO flag=HIDDEN");
             }
         }
         catch (Exception ex)
         {
-            if (_diagCount < 4)
+            if (_diagCount < 6)
             {
                 _diagCount++;
                 OliverBootstrap.LogSource?.LogWarning($"[OLIVER META] Metadata normalization skipped safely: {ex.Message}");
