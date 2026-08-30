@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using BepInEx;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -48,7 +49,14 @@ public sealed class OliverProfileVisualDriver : MonoBehaviour
                 }
             }
 
-            OliverFrameFactory.AttachFrame(transform);
+            // Keep the proven royal frame untouched.
+            OliverFrameFactory.AttachRoyalFrame(transform);
+
+            // Country overlay is additive and appears only when the original TikTok
+            // event supplied a verified ISO-3166 alpha-2 code AND a matching PNG exists.
+            string country = OliverCountryContext.ResolveImage(gameObject.GetInstanceID());
+            OliverFrameFactory.AttachCountryFrame(transform, country);
+
             _done = true;
         }
         catch (Exception ex)
@@ -60,16 +68,21 @@ public sealed class OliverProfileVisualDriver : MonoBehaviour
 
 internal static class OliverFrameFactory
 {
-    private static Texture2D _frameTexture;
-    private static Material _frameMaterial;
-    private static bool _loadAttempted;
+    private static Texture2D _royalTexture;
+    private static Material _royalMaterial;
+    private static bool _royalLoadAttempted;
 
-    internal static void AttachFrame(Transform imageTransform)
+    private static readonly Dictionary<string, Material> CountryMaterials =
+        new Dictionary<string, Material>(StringComparer.Ordinal);
+    private static readonly HashSet<string> CountryLoadAttempted =
+        new HashSet<string>(StringComparer.Ordinal);
+
+    internal static void AttachRoyalFrame(Transform imageTransform)
     {
         if (imageTransform == null || imageTransform.Find("OLIVER_ProfileFrame") != null) return;
 
-        EnsureFrameLoaded();
-        if (_frameTexture == null || _frameMaterial == null) return;
+        EnsureRoyalFrameLoaded();
+        if (_royalTexture == null || _royalMaterial == null) return;
 
         GameObject frame = GameObject.CreatePrimitive(PrimitiveType.Quad);
         frame.name = "OLIVER_ProfileFrame";
@@ -78,16 +91,44 @@ internal static class OliverFrameFactory
         frame.transform.localRotation = Quaternion.identity;
         frame.transform.localScale = Vector3.one * 1.28f;
 
-        // Do not require UnityEngine.PhysicsModule in the helper build. The billboard itself
-        // controls placement and this visual quad is only used as the PNG overlay.
         Renderer renderer = frame.GetComponent<Renderer>();
-        if (renderer != null) renderer.material = _frameMaterial;
+        if (renderer != null) renderer.material = _royalMaterial;
     }
 
-    private static void EnsureFrameLoaded()
+    // Backward-compatible name used by older callers/builds.
+    internal static void AttachFrame(Transform imageTransform)
     {
-        if (_loadAttempted) return;
-        _loadAttempted = true;
+        AttachRoyalFrame(imageTransform);
+    }
+
+    internal static void AttachCountryFrame(Transform imageTransform, string countryCode)
+    {
+        if (imageTransform == null) return;
+        string code = OliverCountryContext.NormalizeVerifiedCountry(countryCode);
+        if (string.IsNullOrWhiteSpace(code)) return; // UNKNOWN => hidden, never guessed.
+        if (imageTransform.Find("OLIVER_CountryFrame") != null) return;
+
+        Material material = EnsureCountryMaterial(code);
+        if (material == null) return;
+
+        GameObject frame = GameObject.CreatePrimitive(PrimitiveType.Quad);
+        frame.name = "OLIVER_CountryFrame";
+        frame.transform.SetParent(imageTransform, false);
+        // Slightly farther from the profile plane than the royal frame so both remain visible.
+        frame.transform.localPosition = new Vector3(0f, 0f, -0.024f);
+        frame.transform.localRotation = Quaternion.identity;
+        frame.transform.localScale = Vector3.one * 1.40f;
+
+        Renderer renderer = frame.GetComponent<Renderer>();
+        if (renderer != null) renderer.material = material;
+
+        OliverBootstrap.LogSource?.LogInfo($"[OLIVER COUNTRY] frame={code}.png attached=YES verified=YES");
+    }
+
+    private static void EnsureRoyalFrameLoaded()
+    {
+        if (_royalLoadAttempted) return;
+        _royalLoadAttempted = true;
 
         try
         {
@@ -98,51 +139,113 @@ internal static class OliverFrameFactory
                 return;
             }
 
-            using Image<Rgba32> image = Image.Load<Rgba32>(path);
-            int width = image.Width;
-            int height = image.Height;
-            Rgba32[] pixels = new Rgba32[width * height];
-            image.CopyPixelDataTo(pixels);
-
-            byte[] rgba = new byte[width * height * 4];
-            for (int y = 0; y < height; y++)
-            {
-                for (int x = 0; x < width; x++)
-                {
-                    int src = y * width + x;
-                    int dst = ((height - 1 - y) * width + x) * 4;
-                    Rgba32 pixel = pixels[src];
-                    rgba[dst] = pixel.R;
-                    rgba[dst + 1] = pixel.G;
-                    rgba[dst + 2] = pixel.B;
-                    rgba[dst + 3] = pixel.A;
-                }
-            }
-
-            _frameTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
-            var il2cppBytes = new Il2CppStructArray<byte>(rgba);
-            _frameTexture.LoadRawTextureData(il2cppBytes);
-            _frameTexture.Apply(false, true);
-            _frameTexture.wrapMode = TextureWrapMode.Clamp;
-            _frameTexture.filterMode = FilterMode.Bilinear;
-
-            Shader shader = Shader.Find("Sprites/Default") ??
-                            Shader.Find("Unlit/Transparent") ??
-                            Shader.Find("Unlit/Texture");
-            if (shader == null)
-            {
-                OliverBootstrap.LogSource?.LogWarning("[OLIVER] No transparent shader was found for the PNG frame.");
-                return;
-            }
-
-            _frameMaterial = new Material(shader);
-            _frameMaterial.mainTexture = _frameTexture;
-            _frameMaterial.color = UnityEngine.Color.white;
-            OliverBootstrap.LogSource?.LogInfo("[OLIVER] Royal PNG frame loaded.");
+            _royalMaterial = LoadTransparentMaterial(path, out _royalTexture);
+            if (_royalMaterial != null)
+                OliverBootstrap.LogSource?.LogInfo("[OLIVER] Royal PNG frame loaded.");
         }
         catch (Exception ex)
         {
             OliverBootstrap.LogSource?.LogWarning($"[OLIVER] Frame PNG could not load: {ex.Message}");
         }
+    }
+
+    private static Material EnsureCountryMaterial(string code)
+    {
+        if (CountryMaterials.TryGetValue(code, out Material cached)) return cached;
+        if (CountryLoadAttempted.Contains(code)) return null;
+        CountryLoadAttempted.Add(code);
+
+        try
+        {
+            string path = FindCountryFramePath(code);
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                OliverBootstrap.LogSource?.LogWarning(
+                    $"[OLIVER COUNTRY] country={code} verified=YES but frame PNG was not found; country overlay hidden.");
+                return null;
+            }
+
+            Material material = LoadTransparentMaterial(path, out Texture2D texture);
+            if (material == null || texture == null) return null;
+
+            CountryMaterials[code] = material;
+            OliverBootstrap.LogSource?.LogInfo($"[OLIVER COUNTRY] frame={Path.GetFileName(path)} loaded=YES source=TIKTOK_EVENT");
+            return material;
+        }
+        catch (Exception ex)
+        {
+            OliverBootstrap.LogSource?.LogWarning($"[OLIVER COUNTRY] Could not load {code}.png: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static string FindCountryFramePath(string code)
+    {
+        string[] folders =
+        {
+            Path.Combine(Paths.PluginPath, "OLIVER_Country_Frames"),
+            Path.Combine(Paths.PluginPath, "CountryFrames"),
+            Path.Combine(Paths.PluginPath, "country_frames"),
+            Path.Combine(Paths.PluginPath, "flags"),
+            Paths.PluginPath
+        };
+
+        string[] fileNames = { code + ".png", code.ToLowerInvariant() + ".png" };
+        foreach (string folder in folders)
+        {
+            foreach (string fileName in fileNames)
+            {
+                string path = Path.Combine(folder, fileName);
+                if (File.Exists(path)) return path;
+            }
+        }
+        return null;
+    }
+
+    private static Material LoadTransparentMaterial(string path, out Texture2D texture)
+    {
+        texture = null;
+        using Image<Rgba32> image = Image.Load<Rgba32>(path);
+        int width = image.Width;
+        int height = image.Height;
+        Rgba32[] pixels = new Rgba32[width * height];
+        image.CopyPixelDataTo(pixels);
+
+        byte[] rgba = new byte[width * height * 4];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int src = y * width + x;
+                int dst = ((height - 1 - y) * width + x) * 4;
+                Rgba32 pixel = pixels[src];
+                rgba[dst] = pixel.R;
+                rgba[dst + 1] = pixel.G;
+                rgba[dst + 2] = pixel.B;
+                rgba[dst + 3] = pixel.A;
+            }
+        }
+
+        texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        var il2cppBytes = new Il2CppStructArray<byte>(rgba);
+        texture.LoadRawTextureData(il2cppBytes);
+        texture.Apply(false, true);
+        texture.wrapMode = TextureWrapMode.Clamp;
+        texture.filterMode = FilterMode.Bilinear;
+
+        Shader shader = Shader.Find("Sprites/Default") ??
+                        Shader.Find("Unlit/Transparent") ??
+                        Shader.Find("Unlit/Texture");
+        if (shader == null)
+        {
+            OliverBootstrap.LogSource?.LogWarning("[OLIVER] No transparent shader was found for PNG overlay.");
+            texture = null;
+            return null;
+        }
+
+        Material material = new Material(shader);
+        material.mainTexture = texture;
+        material.color = UnityEngine.Color.white;
+        return material;
     }
 }
